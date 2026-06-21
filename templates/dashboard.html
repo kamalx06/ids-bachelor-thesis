@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enterprise AI IDS Dashboard</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/main.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>AI IDS Command Center</h1>
+            <p class="dash-tagline">Real-time network threat monitoring</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link is-active">Monitoring</a>
+        {% if current_user.is_authenticated and current_user.role|lower == "admin" %}
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <section class="dash-toolbar" aria-label="Dashboard status">
+        <div class="dash-status" id="idsSensorStatus" role="status" aria-live="polite">
+            <span class="dash-live-dot" id="idsLiveDot" aria-hidden="true"></span>
+            <span id="idsStatusLabel">Checking sensor…</span>
+        </div>
+        <span class="dash-meta">Last sync: <time id="dashLastRefresh">—</time></span>
+    </section>
+
+    <section class="dash-kpi-section" aria-labelledby="overview-heading">
+        <div class="dash-section-head">
+            <h2 id="overview-heading">Security overview</h2>
+            <p class="dash-section-desc">Even types on capture; Safe/Suspicious/Dangerous</p>
+        </div>
+        <div class="dash-kpi-grid">
+            <article class="dash-kpi dash-kpi--neutral">
+                <div class="dash-kpi-icon" aria-hidden="true">Σ</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Total events</span>
+                    <span class="dash-kpi-value" id="sumTotal">0</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--safe">
+                <div class="dash-kpi-icon" aria-hidden="true">✓</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Safe</span>
+                    <span class="dash-kpi-value" id="sumSafe">0</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--warn">
+                <div class="dash-kpi-icon" aria-hidden="true">!</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Suspicious</span>
+                    <span class="dash-kpi-value" id="sumSuspicious">0</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--danger">
+                <div class="dash-kpi-icon" aria-hidden="true">⚠</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Dangerous</span>
+                    <span class="dash-kpi-value" id="sumDangerous">0</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--accent">
+                <div class="dash-kpi-icon" aria-hidden="true">◎</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Unique attackers</span>
+                    <span class="dash-kpi-value" id="sumUnique">0</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--danger-soft">
+                <div class="dash-kpi-icon" aria-hidden="true">⊘</div>
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Dangerous IPs</span>
+                    <span class="dash-kpi-value" id="sumDangerousIps">0</span>
+                </div>
+            </article>
+        </div>
+    </section>
+
+    <section class="dash-charts-section" aria-label="Analytics charts">
+        <div class="dash-section-head">
+            <h2>Analytics</h2>
+            <p class="dash-section-desc">Trends and distributions from recent traffic.</p>
+        </div>
+        <div class="dash-charts-grid">
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Alerts by severity</h3>
+                <p class="dash-chart-sub">Stacked per minute</p>
+                <div class="dash-chart-wrap"><canvas id="severityChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Traffic volume</h3>
+                <p class="dash-chart-sub">Events per minute</p>
+                <div class="dash-chart-wrap"><canvas id="trafficChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Threat distribution</h3>
+                <p class="dash-chart-sub">Safe vs suspicious vs dangerous</p>
+                <div class="dash-chart-wrap dash-chart-wrap--compact"><canvas id="distributionChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Risk score trend</h3>
+                <p class="dash-chart-sub">Average AI score</p>
+                <div class="dash-chart-wrap"><canvas id="riskTrendChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Top risky IPs</h3>
+                <p class="dash-chart-sub">Highest cumulative risk</p>
+                <div class="dash-chart-wrap"><canvas id="topIpChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Top risky domains</h3>
+                <p class="dash-chart-sub">HTTP host activity</p>
+                <div class="dash-chart-wrap"><canvas id="topDomainChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card dash-chart-card--wide">
+                <h3 class="dash-chart-title">DNS tunnel signals</h3>
+                <p class="dash-chart-sub">Heuristic DNS anomalies over time</p>
+                <div class="dash-chart-wrap"><canvas id="dnsTunnelChart" height="100"></canvas></div>
+            </article>
+        </div>
+    </section>
+
+    <section class="card dash-logs-panel" aria-labelledby="search-heading">
+        <div class="dash-section-head">
+            <h2 id="search-heading">Log search &amp; investigation</h2>
+            <p class="dash-section-desc">Filter historical events from the database. Click a row for full JSON details.</p>
+        </div>
+        <div class="dash-search-bar">
+            <span class="dash-search-icon" aria-hidden="true">⌕</span>
+            <label for="qFreeText" class="visually-hidden">Quick filter loaded results</label>
+            <input id="qFreeText" class="dash-search-input" type="search" placeholder="Quick filter on loaded rows (JSON text match)…" autocomplete="off">
+        </div>
+
+        <details class="dash-filters" open>
+            <summary>
+                Advanced filters
+                <span id="activeFilterCount" class="dash-filter-badge is-hidden" aria-live="polite">0 active</span>
+            </summary>
+
+            <div class="dash-filter-section">
+                <h3 class="dash-filter-section-title">Network identity</h3>
+                <div class="field-group dash-filter-grid">
+                    <div class="field">
+                        <label for="qIp">IP (src or dst)</label>
+                        <input id="qIp" type="text" placeholder="e.g., 10.0.0.5" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="qSrcIp">Source IP</label>
+                        <input id="qSrcIp" type="text" placeholder="e.g., 192.168.1.10" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="qDstIp">Destination IP</label>
+                        <input id="qDstIp" type="text" placeholder="e.g., 8.8.8.8" autocomplete="off">
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-filter-section">
+                <h3 class="dash-filter-section-title">Ports &amp; protocol</h3>
+                <div class="field-group dash-filter-grid">
+                    <div class="field field--narrow">
+                        <label for="qPort">Port (either)</label>
+                        <input id="qPort" type="number" min="0" max="65535" step="1" placeholder="443">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qSrcPort">Source port</label>
+                        <input id="qSrcPort" type="number" min="0" max="65535" step="1" placeholder="52431">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qDstPort">Dest port</label>
+                        <input id="qDstPort" type="number" min="0" max="65535" step="1" placeholder="80">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qProtocol">Protocol</label>
+                        <select id="qProtocol">
+                            <option value="">Any</option>
+                            <option value="TCP">TCP</option>
+                            <option value="UDP">UDP</option>
+                            <option value="ICMP">ICMP</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-filter-section">
+                <h3 class="dash-filter-section-title">HTTP / DNS &amp; content</h3>
+                <div class="field-group dash-filter-grid">
+                    <div class="field">
+                        <label for="qUrl">URL / domain contains</label>
+                        <input id="qUrl" type="text" placeholder="e.g., example.com" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="qReason">Reason contains</label>
+                        <input id="qReason" type="text" placeholder="e.g., dns_tunnel, sql_injection" autocomplete="off">
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-filter-section">
+                <h3 class="dash-filter-section-title">Classification &amp; scores</h3>
+                <div class="field-group dash-filter-grid">
+                    <div class="field">
+                        <label for="qClassification">Classification</label>
+                        <select id="qClassification">
+                            <option value="">Any</option>
+                            <option value="safe">Safe</option>
+                            <option value="suspicious">Suspicious</option>
+                            <option value="dangerous">Dangerous</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="qAiLabel">AI label</label>
+                        <select id="qAiLabel">
+                            <option value="">Any</option>
+                            <option value="safe">Safe</option>
+                            <option value="suspicious">Suspicious</option>
+                            <option value="dangerous">Dangerous</option>
+                        </select>
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qMinScore">Min AI score</label>
+                        <input id="qMinScore" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qMaxScore">Max AI score</label>
+                        <input id="qMaxScore" type="number" min="0" max="1" step="0.01" placeholder="1.00">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qMinAnomaly">Min anomaly</label>
+                        <input id="qMinAnomaly" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qMinConfidence">Min confidence</label>
+                        <input id="qMinConfidence" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                    </div>
+                    <div class="field">
+                        <label for="qThreatIntel">Threat intel</label>
+                        <select id="qThreatIntel">
+                            <option value="">Any</option>
+                            <option value="1">Has TI match</option>
+                            <option value="0">No TI match</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-filter-section">
+                <h3 class="dash-filter-section-title">Time window</h3>
+                <div class="dash-time-presets" role="group" aria-label="Time presets">
+                    <button type="button" class="dash-preset-btn" data-range="15m">Last 15m</button>
+                    <button type="button" class="dash-preset-btn" data-range="1h">Last 1h</button>
+                    <button type="button" class="dash-preset-btn" data-range="6h">Last 6h</button>
+                    <button type="button" class="dash-preset-btn" data-range="24h">Last 24h</button>
+                    <button type="button" class="dash-preset-btn" data-range="7d">Last 7d</button>
+                    <button type="button" class="dash-preset-btn" data-range="clear">All time</button>
+                </div>
+                <div class="field-group dash-filter-grid">
+                    <div class="field">
+                        <label for="qStart">Start</label>
+                        <input id="qStart" type="datetime-local" step="1">
+                    </div>
+                    <div class="field">
+                        <label for="qEnd">End</label>
+                        <input id="qEnd" type="datetime-local" step="1">
+                    </div>
+                    <div class="field field--narrow">
+                        <label for="qLimit">Limit</label>
+                        <input id="qLimit" type="number" min="1" max="2000" step="1" value="200">
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <div class="dash-search-actions">
+            <button class="primary dash-btn" id="runSearch" type="button">
+                <span aria-hidden="true">↻</span> Run search
+            </button>
+            <button class="secondary dash-btn" id="resetSearch" type="button">Reset filters</button>
+        </div>
+
+        <div id="searchAlert" class="" aria-live="polite"></div>
+
+        <div class="dash-table-toolbar">
+            <div id="logsPager" class="pager"></div>
+        </div>
+
+        <div class="dash-table-wrap">
+            <table class="dash-table">
+                <thead>
+                    <tr>
+                        <th data-sort="timestamp">Timestamp</th>
+                        <th data-sort="src_ip">Source IP</th>
+                        <th data-sort="src_port">Src Port</th>
+                        <th data-sort="dst_ip">Dest IP</th>
+                        <th data-sort="dst_port">Dst Port</th>
+                        <th data-sort="protocol">Protocol</th>
+                        <th data-sort="classification">Classification</th>
+                        <th data-sort="ai_score">AI Score</th>
+                        <th>Threat Intel</th>
+                        <th>Reasons</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTbody">
+                    <tr><td colspan="10" class="empty">Run a search to load logs.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<div id="logDetailModal" class="modal dash-modal" role="dialog" aria-modal="true" aria-label="Event details">
+    <div class="modal-card dash-modal-card">
+        <div class="modal-head dash-modal-head">
+            <div class="modal-title" id="logDetailTitle">Event details</div>
+            <button class="secondary dash-btn dash-btn--sm" type="button" id="closeLogDetail">Close</button>
+        </div>
+        <pre id="logDetailPre" class="dash-modal-pre">{}</pre>
+    </div>
+</div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

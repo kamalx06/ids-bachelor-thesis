@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Account Settings — AI IDS</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>Account Settings</h1>
+            <p class="dash-tagline">Profile, security, and two-factor authentication</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        {% if current_user.is_authenticated and current_user.role|lower == "admin" %}
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link is-active">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <section class="dash-settings-panel card">
+        <div class="dash-section-head">
+            <h2>Your account</h2>
+            <p class="dash-section-desc">Manage credentials, profile details, and multi-factor authentication.</p>
+        </div>
+
+        <div class="settings-header">
+            <div class="avatar-shell">
+                {% if avatar_url %}
+                    <img id="avatarPreview" src="{{ avatar_url }}" alt="Profile picture">
+                {% else %}
+                    <div id="avatarInitials" class="avatar-initials">{{ (username or '')[:1].upper() }}</div>
+                {% endif %}
+            </div>
+            <div class="settings-user-meta">
+                <div class="settings-user-name">{{ username }}</div>
+                {% if email %}
+                    <div class="settings-user-email">{{ email }}</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="settings-layout">
+            <div class="settings-column">
+                <section class="settings-card-section">
+                    <div class="settings-meta-pill">Security</div>
+                    <h3 class="settings-section-title">Password Management</h3>
+                    <div id="formAlert" aria-live="polite" class="{% if error %}alert error{% endif %}">
+                        {% if error %}{{ error }}{% endif %}
+                    </div>
+                    <form id="passwordForm" method="POST" action="/change_password" autocomplete="off">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="settings-subgrid">
+                            <div class="full-width">
+                                <input type="password" name="current_password" placeholder="Current password" required>
+                            </div>
+                            <div class="full-width">
+                                <input type="password" name="new_password" placeholder="New password (min 12 chars)" required minlength="12">
+                            </div>
+                        </div>
+                        <button type="submit" class="primary dash-btn">Change Password</button>
+                    </form>
+                </section>
+
+                <section class="settings-card-section">
+                    <div class="settings-meta-pill">Profile</div>
+                    <h3 class="settings-section-title">Profile details</h3>
+                    <p class="small settings-section-subtitle">Update your basic account details and profile picture.</p>
+                    <form id="profileForm" method="POST" action="/update_profile" enctype="multipart/form-data" autocomplete="off">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="settings-subgrid">
+                            <div>
+                                <input type="text" name="username" placeholder="Username" value="{{ username or '' }}" required>
+                            </div>
+                            <div>
+                                <input type="email" name="email" placeholder="Optional email for email-based OTP" value="{{ email or '' }}">
+                            </div>
+                            <div class="avatar-upload-row full-width">
+                                <input id="avatarInput" type="file" name="avatar" accept="image/png,image/jpeg,image/webp">
+                            </div>
+                        </div>
+                        <p class="small">Changing your username will log you out and you will need to log in again with your new username.</p>
+                        <p class="small">Profile pictures must be image files only. The server will validate file type and size before saving.</p>
+                        <button type="submit" class="primary dash-btn">Save Profile</button>
+                    </form>
+                </section>
+            </div>
+
+            <div class="settings-column">
+                <section class="settings-card-section">
+                    <div class="settings-meta-pill">2FA</div>
+                    <h3 class="settings-section-title">Two-Factor Authentication</h3>
+                    <h4>TOTP (Authenticator app)</h4>
+                    {% if totp_enabled %}
+                        <p class="small">TOTP is currently enabled for your account. Use your authenticator app to generate login codes.</p>
+                        <button type="button" id="openDisableTotpModal" class="danger dash-btn">Disable TOTP</button>
+                    {% else %}
+                        <p class="small">Protect your account with an authenticator app that generates one-time login codes.</p>
+                        <form id="enableTOTPForm" method="POST" action="/enable_totp">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="primary dash-btn">Enable TOTP</button>
+                        </form>
+                    {% endif %}
+                    <p class="small dash-mt">Disabling 2FA reduces account security.</p>
+                    <hr class="settings-divider">
+                    <h4>Email-based OTP</h4>
+                    <p class="small">Use one-time codes sent to your email when logging in. You must first save an email address in the profile section.</p>
+                    {% if email_otp_enabled %}
+                        <p class="small">Email-based OTP is currently enabled{% if masked_email %} for {{ masked_email }}.{% elif email %} for {{ email }}.{% else %} for your account.{% endif %}</p>
+                        <button type="button" id="openDisableEmailOtpModal" class="danger dash-btn">Disable email OTP</button>
+                    {% else %}
+                        <p class="small">Email-based OTP is not enabled yet.</p>
+                        <button type="button" id="startEmailOtpEnable" class="primary dash-btn"{% if not email %} disabled title="Add an email above and save profile first."{% endif %}>Enable email OTP</button>
+                    {% endif %}
+                </section>
+            </div>
+        </div>
+    </section>
+</main>
+
+{% if show_totp_qr and totp_enabled %}
+<div id="totpQrModal" class="modal-overlay">
+    <div class="modal dash-modal-inner">
+        <h4>Scan this QR code with your authenticator app</h4>
+        <p class="small">This QR code is shown only once. Do not close this window until you have added it to your authenticator app.</p>
+        <img src="/totp_qr" alt="TOTP QR Code">
+        <button type="button" id="closeTotpQrModal" class="secondary dash-btn">Close</button>
+    </div>
+</div>
+{% endif %}
+
+<div id="totpVerifyModal" class="modal-overlay" style="display:none;">
+    <div class="modal dash-modal-inner">
+        <h4>Verify your authenticator code</h4>
+        <p class="small">Enter the 6-digit code from your authenticator app to confirm that TOTP has been set up correctly.</p>
+        <input id="totpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <button type="button" id="totpVerifySubmit" class="primary dash-btn">Verify</button>
+    </div>
+</div>
+
+<div id="disableTotpModal" class="modal-overlay" style="display:none;">
+    <div class="modal dash-modal-inner">
+        <h4>Disable TOTP</h4>
+        <p class="small">Enter your account password and a current code from your authenticator app to disable TOTP.</p>
+        <input id="disableTotpPassword" type="password" placeholder="Account password" autocomplete="current-password">
+        <input id="disableTotpCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit TOTP code" maxlength="6" pattern="\\d{6}">
+        <button type="button" id="disableTotpConfirm" class="danger dash-btn">Disable TOTP</button>
+        <button type="button" data-close-modal="disableTotpModal" class="secondary dash-btn">Cancel</button>
+    </div>
+</div>
+
+<div id="emailOtpVerifyModal" class="modal-overlay" style="display:none;">
+    <div class="modal dash-modal-inner">
+        <h4>Verify email code</h4>
+        <p class="small">We have sent a 6-digit verification code to your email. Enter it below to enable email-based OTP.</p>
+        <input id="emailOtpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <button type="button" id="emailOtpVerifySubmit" class="primary dash-btn">Verify</button>
+        <button type="button" data-close-modal="emailOtpVerifyModal" class="secondary dash-btn">Cancel</button>
+    </div>
+</div>
+
+<div id="emailOtpDisableModal" class="modal-overlay" style="display:none;">
+    <div class="modal dash-modal-inner">
+        <h4>Disable email-based OTP</h4>
+        <p class="small">Enter your account password and the 6-digit code sent to your email to disable email-based OTP.</p>
+        <input id="emailOtpDisablePassword" type="password" placeholder="Account password" autocomplete="current-password">
+        <input id="emailOtpDisableCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <button type="button" id="emailOtpDisableConfirm" class="danger dash-btn">Disable email OTP</button>
+        <button type="button" data-close-modal="emailOtpDisableModal" class="secondary dash-btn">Cancel</button>
+    </div>
+</div>
+
+<script src="/static/js/settings.js"></script>
+</body>
+</html>

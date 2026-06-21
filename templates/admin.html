@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Administration — AI IDS</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>Administration</h1>
+            <p class="dash-tagline">User accounts, roles, and access control</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        <a href="/admin" class="dash-nav-link is-active">Admin</a>
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <section class="card dash-logs-panel" aria-labelledby="admin-heading">
+        <div class="dash-section-head">
+            <h2 id="admin-heading">User management</h2>
+            <p class="dash-section-desc">Create accounts, assign roles, reset MFA, and manage lock status.</p>
+        </div>
+            <div class="field-group dash-filter-grid">
+                <div class="field">
+                    <label for="userSearch">Search (username/email)</label>
+                    <input id="userSearch" type="text" placeholder="e.g., admin or @company.com" maxlength="254">
+                </div>
+                <div class="field" style="max-width: 220px;">
+                    <label for="userSort">Sort</label>
+                    <select id="userSort">
+                        <option value="id">ID</option>
+                        <option value="username">Username</option>
+                        <option value="role">Role</option>
+                        <option value="email">Email</option>
+                        <option value="locked">Lock</option>
+                    </select>
+                </div>
+                <div class="field" style="max-width: 180px;">
+                    <label for="userOrder">Order</label>
+                    <select id="userOrder">
+                        <option value="desc">Desc</option>
+                        <option value="asc">Asc</option>
+                    </select>
+                </div>
+                <div class="field" style="max-width: 180px;">
+                    <label for="userPageSize">Page size</label>
+                    <select id="userPageSize">
+                        <option value="10">10</option>
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field-group">
+                <div class="field">
+                    <label for="newUsername">Username</label>
+                    <input id="newUsername" type="text" placeholder="e.g., soc_analyst1" maxlength="30">
+                </div>
+                <div class="field">
+                    <label for="newEmail">Email (optional)</label>
+                    <input id="newEmail" type="email" placeholder="optional">
+                </div>
+                <div class="field">
+                    <label for="newRole">Role</label>
+                    <select id="newRole">
+                        <option value="soc">SOC Analyst</option>
+                        <option value="admin">IT Administrator</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="newPassword">Temp password</label>
+                    <input id="newPassword" type="text" placeholder="12-64 chars">
+                </div>
+            </div>
+            <div class="field-group">
+                <div class="field" style="max-width: 240px;">
+                    <label>&nbsp;</label>
+                    <button class="primary dash-btn" id="createUserBtn" type="button">Create user</button>
+                </div>
+                <div class="field" style="max-width: 240px;">
+                    <label>&nbsp;</label>
+                    <button class="secondary dash-btn" id="refreshUsersBtn" type="button">Refresh list</button>
+                </div>
+            </div>
+            <div id="adminAlert" class="" aria-live="polite"></div>
+
+            <div class="field-group" style="align-items: end;">
+                <div class="field" style="max-width: 240px;">
+                    <label>&nbsp;</label>
+                    <button class="secondary dash-btn" id="applyFiltersBtn" type="button">Apply filters</button>
+                </div>
+                <div class="field" style="max-width: 240px;">
+                    <label>&nbsp;</label>
+                    <button class="secondary dash-btn" id="clearFiltersBtn" type="button">Clear filters</button>
+                </div>
+                <div class="field" style="flex: 1;">
+                    <label>&nbsp;</label>
+                    <div id="usersPager" class="pager"></div>
+                </div>
+            </div>
+
+            <div class="dash-table-wrap">
+                <table class="dash-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Role</th>
+                            <th>Email</th>
+                            <th>MFA</th>
+                            <th>Lock</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTbody">
+                        <tr><td colspan="7" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+    </section>
+</main>
+
+<script src="/static/js/admin.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,77 @@
+# Flask / Application Settings
+FLASK_SECRET=<anysecret>
+LOG_LEVEL=INFO
+
+# SMTP Alerting (required by uni-server.py)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=yourgmail@gmail.com
+SMTP_PASSWORD=<smtppassword>
+SMTP_FROM=yourgmail@gmail.com
+ALERT_RECIPIENTS=yourgmail@gmail.com
+
+# MySQL Database (required by storage/db.py)
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=test_user
+MYSQL_PASSWORD=change-me
+MYSQL_DB=ids_db_test
+IDS_BOOTSTRAP_ADMIN_USER=<user>
+IDS_BOOTSTRAP_ADMIN_PASSWORD=<pass>
+
+# Optional DB Pool Tuning
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=10
+
+# IDS Sensor Configuration
+SNIFFER_INTERFACE=eth0
+SNIFFER_BPF=ip
+IDS_WORKER_COUNT=8
+IDS_QUEUE_MAXSIZE=50000
+IDS_LOG_QUEUE_MAXSIZE=50000
+IDS_PREPROCESS_WORKERS=4
+IDS_RAW_QUEUE_MAXSIZE=10000
+IDS_FLOW_SHARDS=128
+IDS_BEHAVIOR_SHARDS=64
+IDS_PORT_SCAN_WINDOW=8
+IDS_FLOOD_THRESHOLD=120
+IDS_FLOOD_WINDOW=3
+
+TI_MIN_SCORE_FOR_LOOKUP=0.25
+TI_FULL_ENRICH_SCORE=0.45
+
+LOG_PAYLOADS=false
+IDS_PERSIST_SAFE_LOGS=false
+
+IDS_PRESSURE_SAMPLE_AT=0.80
+IDS_DROP_LOG_INTERVAL=5
+SENDER_STARTUP_DELAY=3
+
+# IDS Sensor → Server API Telemetry
+API_URL=https://localhost:5000/ids
+SEND_INTERVAL=5
+IDS_STATS_PERSIST_INTERVAL=2
+IDS_DB_BATCH_SIZE=50
+IDS_PORT_SCAN_THRESHOLD=25
+IDS_SUSPICIOUS_THRESHOLD=0.52
+IDS_DANGEROUS_THRESHOLD=0.78
+IDS_LOG_JSON=false
+IDS_DEBUG=false
+
+# Zeek Log Correlation (optional)
+ZEEK_LOG=/opt/zeek/logs/current/conn.log
+ZEEK_LOG_DIR=/opt/zeek/logs/current
+
+# Threat Intelligence / External APIs
+REPUTATION_KEY=<AbuseIPDB_API_Key>
+VT_KEY=<Virustotal_API_Key>
+ABUSEIPDB_URL=https://api.abuseipdb.com/api/v2/check
+VIRUSTOTAL_URL=https://www.virustotal.com/api/v3/urls
+IPAPI_ENABLED=true
+TI_BLOCKLIST_PATH=config/blocklist_ips.txt
+
+# Runtime Feature Flags
+WEBUI_START_IDS_SENSOR=true
+WEB_UI_SSL=true
+SENDER_MAX_WAIT=45
+IDS_TLS_VERIFY=false
