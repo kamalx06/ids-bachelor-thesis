@@ -21,6 +21,8 @@ import argparse
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import warnings
@@ -55,6 +57,13 @@ logger = get_logger(__name__)
 _ROOT = Path(__file__).resolve().parent
 DEFAULT_MODEL_DIR = _ROOT / "models"
 DEFAULT_CSV = _ROOT / "data" / "cic_ids.csv"
+_TRAIN_SCRIPT = _ROOT / "train_ids_models.py"
+
+# ai.classifier treats these two as required to load at all (iso_model.pkl /
+# feature_names.pkl are optional -- their absence just disables anomaly
+# detection). This is the same definition of "ready" used there; keep the
+# two in sync if that ever changes.
+REQUIRED_MODEL_FILES = ("rf_model.pkl", "scaler.pkl")
 
 SourceName = Literal["auto", "sqlite", "mysql", "csv"]
 
@@ -64,6 +73,76 @@ warnings.filterwarnings(
     category=UserWarning,
     module=r"sklearn\.utils\.parallel",
 )
+
+# The filter above only silences this process. With n_jobs=-1, joblib fans
+# tree-building out to separate worker *processes*; each is a fresh
+# interpreter that never sees the filterwarnings() call above, so every
+# worker re-emits the same UserWarning once (harmless, but very noisy on
+# machines where joblib defaults to a process-based backend). PYTHONWARNINGS
+# is read by every subsequently spawned interpreter at its own startup, so
+# set it here too -- as long as it's set before the first .fit() call, it
+# reaches the workers regardless of whether they're spawned or forked.
+os.environ.setdefault(
+    "PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.parallel"
+)
+
+
+def ensure_models_available(
+    *,
+    model_dir: Path | None = None,
+    csv_path: Path | None = None,
+) -> bool:
+    """
+    Startup gate for the process supervisor / web server: make sure the
+    models ai.classifier requires exist on disk *before* uni-srver.py or
+    ids_engine.py are started, training fresh from the CIC-IDS CSV if they
+    don't. Deliberately does not import ai.classifier -- that would eagerly
+    load the models into whichever process calls this (main.py's supervisor
+    doesn't need them in memory, it just needs the files to exist).
+
+    Returns True once the required models are present (already there, or
+    just trained here). Returns False -- without raising -- when they're
+    missing and there's no CSV to bootstrap from; callers should treat that
+    as fatal and not start any services.
+    """
+    model_dir = model_dir or DEFAULT_MODEL_DIR
+    csv_path = csv_path or DEFAULT_CSV
+    required = [model_dir / name for name in REQUIRED_MODEL_FILES]
+
+    if all(p.is_file() for p in required):
+        logger.info("AI models present in %s — ready to start.", model_dir)
+        return True
+
+    missing = ", ".join(p.name for p in required if not p.is_file())
+    logger.warning("AI models missing (%s in %s).", missing, model_dir)
+
+    if not csv_path.is_file():
+        logger.error(
+            "Cannot bootstrap-train: %s not found. Provide the CIC-IDS CSV "
+            "at that path (or place trained rf_model.pkl/scaler.pkl in %s "
+            "yourself) before starting the IDS -- refusing to start "
+            "uni-srver.py / ids_engine.py without a usable model.",
+            csv_path,
+            model_dir,
+        )
+        return False
+
+    logger.info("Training AI models from %s before starting services...", csv_path)
+    try:
+        subprocess.run([sys.executable, str(_TRAIN_SCRIPT)], check=True)
+    except Exception:
+        logger.error("Bootstrap training from %s failed", csv_path, exc_info=True)
+        return False
+
+    if not all(p.is_file() for p in required):
+        logger.error(
+            "Bootstrap training finished but %s is still missing required model file(s).",
+            model_dir,
+        )
+        return False
+
+    logger.info("AI models trained and saved to %s", model_dir)
+    return True
 
 
 @dataclass

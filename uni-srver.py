@@ -1793,9 +1793,23 @@ def _start_ids_sensor_if_enabled() -> None:
 
 
 if __name__ == "__main__":
+    from ai.retrainer import ensure_models_available
     from bootstrap_db import bootstrap_database
 
     bootstrap_database()
+
+    # Check the AI models are on disk (training fresh from the CIC-IDS CSV
+    # if they're not) before anything else starts. If there's no model and
+    # no CSV to bootstrap one from, stop here rather than starting a web UI
+    # / IDS sensor that can only fail once traffic actually needs scoring.
+    if not ensure_models_available():
+        import logging
+
+        logging.getLogger(__name__).error(
+            "AI models are not available and could not be trained — refusing to start uni-srver.py."
+        )
+        raise SystemExit(1)
+
     try:
         init_persistence()
         sync_stats_from_persistence()

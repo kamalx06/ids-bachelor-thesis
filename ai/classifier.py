@@ -48,13 +48,31 @@ def _run_training() -> None:
         raise RuntimeError("Failed to train IDS models automatically.") from e
 
 
+def _pin_single_threaded(model: Any) -> Any:
+    """
+    Trained models keep whatever n_jobs the retrainer used (-1, for
+    CPU-bound tree building over many rows). Live inference scores one
+    packet's single feature row per call, so fanning that out across
+    joblib's process pool adds pickling/IPC overhead with no speedup, and
+    on some platforms re-triggers a noisy (harmless) sklearn UserWarning in
+    each worker process. Pinning to n_jobs=1 after loading doesn't change
+    predictions at all, only how the (now-trivial) work is scheduled.
+    """
+    if hasattr(model, "set_params"):
+        try:
+            model.set_params(n_jobs=1)
+        except Exception:
+            pass
+    return model
+
+
 def _load_model(path: Path, *, required: bool = True) -> Any:
     if required and not path.exists():
         _run_training()
 
     try:
         with config_context(assume_finite=True):
-            return joblib.load(path)
+            return _pin_single_threaded(joblib.load(path))
     except Exception as e:
         if required:
             raise RuntimeError(f"Failed to load required model: {path}") from e

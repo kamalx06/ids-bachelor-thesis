@@ -10,6 +10,13 @@ warnings.filterwarnings(
     category=UserWarning,
     module=r"sklearn\.utils\.parallel",
 )
+# See ai/retrainer.py for why this is also needed: n_jobs=-1 fans tree
+# building out to separate worker processes, and each fresh interpreter
+# never sees the filterwarnings() call above. PYTHONWARNINGS is read by
+# every subsequently spawned interpreter at its own startup.
+os.environ.setdefault(
+    "PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.parallel"
+)
 import pandas as pd
 import joblib
 

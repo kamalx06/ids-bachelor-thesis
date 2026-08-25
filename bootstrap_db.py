@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from logging_config import get_logger
@@ -11,6 +12,7 @@ logger = get_logger(__name__)
 
 ROOT = Path(__file__).resolve().parent
 _BOOTSTRAP_DONE = False
+_DB_NAME_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 def _run_sql_file(connection, file_path: Path) -> None:
@@ -19,11 +21,34 @@ def _run_sql_file(connection, file_path: Path) -> None:
         return
 
     sql = file_path.read_text(encoding="utf-8")
-    statements = [s.strip() for s in sql.split(";") if s.strip()]
+    # Strip each candidate statement once (not once to test it, once more to
+    # use it) and skip the empties left by trailing/blank `;` separators.
+    statements = [stmt for raw in sql.split(";") if (stmt := raw.strip())]
 
     with connection.cursor() as cur:
         for stmt in statements:
             cur.execute(stmt)
+
+
+@contextmanager
+def _db_session():
+    """
+    SQLAlchemy session that commits on a clean exit, rolls back and
+    re-raises on error, and always closes -- shared by the small "seed a
+    row if missing" bootstrap steps below so each one only has to state its
+    own query/insert, not repeat the session lifecycle around it.
+    """
+    from storage.db import get_session
+
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def _load_env() -> bool:
@@ -50,7 +75,7 @@ def _get_mysql_env() -> dict:
 
 
 def _validate_db_name(db: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9_]+", db or ""))
+    return bool(_DB_NAME_RE.fullmatch(db or ""))
 
 
 def _bootstrap_mysql_database() -> bool:
@@ -90,7 +115,9 @@ def _bootstrap_mysql_database() -> bool:
 
 
 def _bootstrap_sqlalchemy_schema() -> None:
-    sys.path.insert(0, str(ROOT))
+    root_str = str(ROOT)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
     from storage.migrations import run_migrations
 
     run_migrations()
@@ -99,21 +126,18 @@ def _bootstrap_sqlalchemy_schema() -> None:
 def _ensure_ids_statistics_row() -> None:
     from sqlalchemy import select
 
-    from storage.db import get_session
     from storage.models import IdsStatistics
 
-    session = get_session()
     try:
-        row = session.execute(select(IdsStatistics).where(IdsStatistics.id == 1)).scalar_one_or_none()
-        if row is None:
-            session.add(IdsStatistics(id=1))
-            session.commit()
-            logger.info("Initialized ids_statistics singleton row")
+        with _db_session() as session:
+            row = session.execute(
+                select(IdsStatistics).where(IdsStatistics.id == 1)
+            ).scalar_one_or_none()
+            if row is None:
+                session.add(IdsStatistics(id=1))
+                logger.info("Initialized ids_statistics singleton row")
     except Exception as exc:
-        session.rollback()
         logger.debug("ids_statistics seed skipped: %s", exc)
-    finally:
-        session.close()
 
 
 def _ensure_default_admin() -> None:
@@ -129,30 +153,25 @@ def _ensure_default_admin() -> None:
     from argon2.low_level import Type
     from sqlalchemy import func, select
 
-    from storage.db import get_session
     from storage.models import User
 
-    session = get_session()
     try:
-        count = session.execute(select(func.count()).select_from(User)).scalar() or 0
-        if count > 0:
-            return
+        with _db_session() as session:
+            count = session.execute(select(func.count()).select_from(User)).scalar() or 0
+            if count > 0:
+                return
 
-        ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, type=Type.ID)
-        session.add(
-            User(
-                username=username,
-                password_hash=ph.hash(password),
-                role="admin",
+            ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, type=Type.ID)
+            session.add(
+                User(
+                    username=username,
+                    password_hash=ph.hash(password),
+                    role="admin",
+                )
             )
-        )
-        session.commit()
-        logger.info("Bootstrap admin user created: %s", username)
+            logger.info("Bootstrap admin user created: %s", username)
     except Exception as exc:
-        session.rollback()
         logger.warning("Default admin bootstrap skipped: %s", exc)
-    finally:
-        session.close()
 
 
 def _bootstrap_sqlite_training_store() -> None:
