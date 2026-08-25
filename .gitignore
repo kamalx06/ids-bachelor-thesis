@@ -1,3 +1,4 @@
 .env
 ids.db
 cic_ids.csv
+__pycache__/

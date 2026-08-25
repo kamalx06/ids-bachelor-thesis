@@ -15,6 +15,7 @@ from pathlib import Path
 import dotenv
 from scapy.all import sniff
 
+from ai import classifier
 from ai.retrainer import retrain
 from alerts.dangerous_burst import maybe_alert_dangerous_burst
 from api_client.sender import start_sender
@@ -57,8 +58,17 @@ _worker_threads: dict[str, threading.Thread] = {}
 _stop_event = threading.Event()
 
 
-def _should_persist_log(classification: str) -> bool:
-    return classification != "safe" or _PERSIST_SAFE_LOGS
+def _should_persist_log(classification: str, reasons: list | None = None) -> bool:
+    if classification != "safe" or _PERSIST_SAFE_LOGS:
+        return True
+    # DNS-tunnel heuristics (engine.dns_behavior) routinely fire well before
+    # the fused risk score crosses the suspicious threshold, so those events
+    # would otherwise stay classified "safe" and never reach packet_logs --
+    # which is the only table /ids/logs reads, and therefore the only source
+    # for the dashboard's "DNS tunnel signals" chart. Persist them on their
+    # own merit so that chart has data even when nothing else about the flow
+    # looks dangerous yet.
+    return any(isinstance(r, str) and r.startswith("dns_") for r in (reasons or []))
 
 
 def _event_time_for_log(packet_dict: dict, data: dict) -> float:
@@ -148,7 +158,7 @@ def _process_packet(packet_dict: dict) -> None:
 
     logs.append(log_entry)
 
-    if _should_persist_log(label):
+    if _should_persist_log(label, reasons):
         persistence.enqueue_packet_log(log_entry)
 
     persistence.enqueue_ai_history(
@@ -241,7 +251,16 @@ def auto_retrain() -> None:
             if _stop_event.wait(3600 * 24):
                 break
             logger.info("Starting scheduled model retraining")
-            retrain()
+            result = retrain()
+            if result is None:
+                logger.info("Retrain skipped (not enough training samples yet)")
+                continue
+            # retrain() only rewrites the .pkl files on disk -- without this,
+            # the live classifier keeps serving the models it loaded at
+            # process start until the next restart, so retraining silently
+            # has no effect on running detection.
+            if not classifier.reload_models():
+                logger.error("Retrain succeeded but reloading models into the live classifier failed")
         except Exception:
             logger.error("Scheduled model retraining failed", exc_info=True)
 

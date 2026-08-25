@@ -49,6 +49,12 @@ SENDER_STARTUP_DELAY=3
 
 # IDS Sensor → Server API Telemetry
 API_URL=https://localhost:5000/ids
+# Required: shared secret that authenticates the sensor to the Web UI's
+# /ids/update endpoint (sent as the X-IDS-TOKEN header). Both uni-srver.py
+# and ids_engine.py read this from the same .env, so one value here covers
+# both sides. Without it, /ids/update rejects every request. Generate one
+# with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+IDS_SENSOR_TOKEN=<random-shared-secret>
 SEND_INTERVAL=5
 IDS_STATS_PERSIST_INTERVAL=2
 IDS_DB_BATCH_SIZE=50

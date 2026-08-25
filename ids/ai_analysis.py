@@ -79,7 +79,13 @@ def _has_attack_signals(
         if not isinstance(r, str):
             continue
         rl = r.lower()
-        if r in ("ml_attack", "anomaly", "strong_anomaly_detected", "high_rf_attack_probability"):
+        if r in (
+            "ml_attack",
+            "anomaly",
+            "strong_anomaly_detected",
+            "high_rf_attack_probability",
+            "dns_tunnel_suspected",
+        ):
             return True
         if any(rl.startswith(p) for p in _ATTACK_REASON_PREFIXES):
             return True
@@ -165,7 +171,14 @@ def _capped_adjusted_score(
         extra += _BEHAVIOR_BOOST.get(behavior, 0.10)
 
     if dns_reasons:
-        extra += min(0.12, 0.03 * len(dns_reasons))
+        if "dns_tunnel_suspected" in dns_reasons:
+            # Explicit escalation marker: engine.dns_behavior.detect_dns()
+            # only emits this once several heuristics already agree, so
+            # treat it like the other named behaviors above instead of the
+            # generic per-reason trickle below.
+            extra += _BEHAVIOR_BOOST["dns_tunnel_suspected"]
+        else:
+            extra += min(0.12, 0.03 * len(dns_reasons))
 
     cap = _MAX_ATTACK_BOOST if attack_signals else _MAX_SCORE_BOOST
     extra = min(cap, extra)

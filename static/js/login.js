@@ -42,28 +42,70 @@ document.addEventListener("DOMContentLoaded", () => {
         otpMethodModal.setAttribute("aria-hidden", "true");
     }
 
+    // Built with DOM APIs (not innerHTML + template strings) so that a
+    // username/password containing HTML-special characters (", <, &, ...)
+    // can never be parsed as markup -- template-literal interpolation into
+    // innerHTML here would have been a DOM XSS (and would silently corrupt
+    // the hidden fields for any legitimate password containing a quote).
+    function hiddenField(name, value) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        return input;
+    }
+
     function showTotpStep(username, password) {
         passwordStep.style.display = "none";
-        otpStepContainer.innerHTML = `
-            <input type="hidden" name="username" value="${username}">
-            <input type="hidden" name="password" value="${password}">
-            <input type="hidden" name="otp_method" value="totp">
-            <input name="otp" placeholder="Enter TOTP code" pattern="\\d{6}" title="6-digit OTP" required>
-            <button type="submit">Login</button>
-        `;
+        otpStepContainer.innerHTML = "";
+
+        const otpInput = document.createElement("input");
+        otpInput.name = "otp";
+        otpInput.placeholder = "Enter TOTP code";
+        otpInput.pattern = "\\d{6}";
+        otpInput.title = "6-digit OTP";
+        otpInput.required = true;
+
+        const submitBtn = document.createElement("button");
+        submitBtn.type = "submit";
+        submitBtn.textContent = "Login";
+
+        otpStepContainer.append(
+            hiddenField("username", username),
+            hiddenField("password", password),
+            hiddenField("otp_method", "totp"),
+            otpInput,
+            submitBtn
+        );
     }
 
     function showEmailStep(username, password, maskedEmail) {
         passwordStep.style.display = "none";
-        const safeMasked = maskedEmail || "your email";
-        otpStepContainer.innerHTML = `
-            <input type="hidden" name="username" value="${username}">
-            <input type="hidden" name="password" value="${password}">
-            <input type="hidden" name="otp_method" value="email">
-            <p class="small">Enter the 6-digit code sent to ${safeMasked}.</p>
-            <input name="otp" placeholder="Enter received code" pattern="\\d{6}" title="6-digit code" required>
-            <button type="submit">Login</button>
-        `;
+        otpStepContainer.innerHTML = "";
+
+        const info = document.createElement("p");
+        info.className = "small";
+        info.textContent = `Enter the 6-digit code sent to ${maskedEmail || "your email"}.`;
+
+        const otpInput = document.createElement("input");
+        otpInput.name = "otp";
+        otpInput.placeholder = "Enter received code";
+        otpInput.pattern = "\\d{6}";
+        otpInput.title = "6-digit code";
+        otpInput.required = true;
+
+        const submitBtn = document.createElement("button");
+        submitBtn.type = "submit";
+        submitBtn.textContent = "Login";
+
+        otpStepContainer.append(
+            hiddenField("username", username),
+            hiddenField("password", password),
+            hiddenField("otp_method", "email"),
+            info,
+            otpInput,
+            submitBtn
+        );
     }
 
     async function startLoginEmailOtp(username, password) {

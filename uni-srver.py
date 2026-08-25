@@ -20,7 +20,6 @@ import dotenv
 from email.message import EmailMessage
 from PIL import Image
 import re
-import unicodedata
 import pyclamd
 import imghdr
 import json
@@ -54,8 +53,10 @@ for var in required_vars:
     globals()[var] = os.environ.get(var)
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
 
+# NOTE: SECRET_KEY must come from FLASK_SECRET (not a fresh secrets.token_hex()
+# generated at import time) so that sessions/CSRF tokens stay valid across
+# process restarts and across multiple worker processes in production.
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=True,
@@ -88,6 +89,27 @@ ph = PasswordHasher(
     type=Type.ID
 )
 
+# Shared bounds so every entry point that hashes/verifies a password agrees
+# on the same limits. Keeping these in one place also avoids the previous
+# mismatch where /login capped passwords at 30 chars while admin-created
+# accounts could be given up to 64 -- locking those users out forever.
+MAX_USERNAME_LEN = 30
+MAX_PASSWORD_LEN = 64
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,30}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Fixed dummy hash used to burn roughly the same amount of Argon2 time on
+# "unknown username" as on "wrong password", so response timing can't be
+# used to enumerate valid usernames.
+_DUMMY_PASSWORD_HASH = ph.hash(secrets.token_hex(32))
+
+
+def _equalize_auth_timing(password: str) -> None:
+    try:
+        ph.verify(_DUMMY_PASSWORD_HASH, password)
+    except Exception:
+        pass
+
 @app.before_request
 def strict_request_validation():
     te = request.headers.get("Transfer-Encoding")
@@ -113,6 +135,7 @@ def strict_request_validation():
 def secure_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
@@ -253,6 +276,41 @@ def mask_email(email_value: str) -> str:
     return f"{visible}***@{domain}"
 
 
+def _clamav_scan_clean(data: bytes) -> bool:
+    """
+    Best-effort ClamAV scan of an uploaded file's bytes.
+
+    Returns False only when the daemon actively reports the content as
+    infected. If clamd is unreachable/unconfigured we fail open (allow the
+    upload) but log it loudly, since the avatar is already re-encoded via
+    Pillow afterwards, which strips most embedded-payload tricks anyway.
+    """
+    import logging
+
+    try:
+        cd = pyclamd.ClamdUnixSocket()
+        if not cd.ping():
+            cd = pyclamd.ClamdNetworkSocket()
+            cd.ping()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ClamAV daemon unreachable; skipping avatar malware scan"
+        )
+        return True
+
+    try:
+        result = cd.scan_stream(data)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ClamAV scan failed; skipping avatar malware scan", exc_info=True
+        )
+        return True
+
+    if result is not None:
+        logging.getLogger(__name__).warning("ClamAV flagged an uploaded avatar: %r", result)
+    return result is None
+
+
 def send_email_otp(to_email: str, code: str, purpose: str = "Login verification") -> None:
     host = SMTP_HOST
     port = SMTP_PORT
@@ -297,9 +355,9 @@ def login():
     username = request.form.get("username")
     username = (username or "").strip()
 
-    password = request.form.get("password")
-    
-    if len(username) > 30 or len(password) > 30:
+    password = request.form.get("password") or ""
+
+    if len(username) > MAX_USERNAME_LEN or len(password) > MAX_PASSWORD_LEN:
         return render_login_error("Invalid credentials", 401)
     otp = (request.form.get("otp") or "").strip()
     otp_method = (request.form.get("otp_method") or "").strip()
@@ -318,6 +376,7 @@ def login():
 
     error_msg = "Invalid credentials"
     if not row:
+        _equalize_auth_timing(password)
         return render_login_error(error_msg, 401)
 
     user_id = row.id
@@ -469,6 +528,9 @@ def check_totp():
     if not username or not password:
         return api_error("Missing fields", status_code=400)
 
+    if len(username) > MAX_USERNAME_LEN or len(password) > MAX_PASSWORD_LEN:
+        return api_error("Invalid credentials", status_code=401)
+
     s = get_session()
     try:
         user = (
@@ -478,6 +540,7 @@ def check_totp():
             .first()
         )
         if not user:
+            _equalize_auth_timing(password)
             return api_error("Invalid credentials", status_code=401)
 
         try:
@@ -519,6 +582,9 @@ def start_login_email_otp():
     if not username or not password:
         return api_error("Missing fields", status_code=400)
 
+    if len(username) > MAX_USERNAME_LEN or len(password) > MAX_PASSWORD_LEN:
+        return api_error("Invalid credentials", status_code=401)
+
     s = get_session()
     try:
         user = (
@@ -528,6 +594,7 @@ def start_login_email_otp():
             .first()
         )
         if not user:
+            _equalize_auth_timing(password)
             return api_error("Invalid credentials", status_code=401)
 
         try:
@@ -651,51 +718,47 @@ def disable_totp():
         session["settings_error"] = "Missing fields"
         return redirect("/settings")
 
-    s = get_session()
-    try:
-        user = s.get(DbUser, int(current_user.id))
-    finally:
-        # we will keep session open for updates below; closed explicitly on each branch
-        pass
-
-    if not user:
-        if request.is_json:
-            return jsonify({"ok": False, "error": "User not found"}), 404
-        session["settings_error"] = "User not found"
-        return redirect("/settings")
-
-    password_hash = user.password_hash
-    totp_secret = user.totp_secret
-    totp_enabled = bool(user.totp_enabled)
-
-    if not totp_enabled:
-        if request.is_json:
-            return jsonify({"ok": False, "error": "TOTP not enabled"}), 400
-        session["settings_error"] = "TOTP not enabled"
-        return redirect("/settings")
-
-    try:
-        ph.verify(password_hash, password)
-    except VerifyMismatchError:
+    if len(password) > MAX_PASSWORD_LEN:
         if request.is_json:
             return jsonify({"ok": False, "error": "Invalid password"}), 400
         session["settings_error"] = "Invalid password"
         return redirect("/settings")
 
-    totp = pyotp.TOTP(totp_secret)
-    if not totp.verify(otp):
-        if request.is_json:
-            return jsonify({"ok": False, "error": "Invalid OTP"}), 400
-        session["settings_error"] = "Invalid OTP"
-        return redirect("/settings")
     s = get_session()
     try:
-        u = s.get(DbUser, int(current_user.id))
-        if u:
-            u.totp_enabled = False
-            u.totp_secret = None
-            u.totp_qr_shown = False
-            s.commit()
+        user = s.get(DbUser, int(current_user.id))
+
+        if not user:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "User not found"}), 404
+            session["settings_error"] = "User not found"
+            return redirect("/settings")
+
+        if not user.totp_enabled:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "TOTP not enabled"}), 400
+            session["settings_error"] = "TOTP not enabled"
+            return redirect("/settings")
+
+        try:
+            ph.verify(user.password_hash, password)
+        except VerifyMismatchError:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "Invalid password"}), 400
+            session["settings_error"] = "Invalid password"
+            return redirect("/settings")
+
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(otp):
+            if request.is_json:
+                return jsonify({"ok": False, "error": "Invalid OTP"}), 400
+            session["settings_error"] = "Invalid OTP"
+            return redirect("/settings")
+
+        user.totp_enabled = False
+        user.totp_secret = None
+        user.totp_qr_shown = False
+        s.commit()
     finally:
         s.close()
 
@@ -754,6 +817,14 @@ def change_password():
             error="Missing password fields"
         ), 400
 
+    if len(current_password) > MAX_PASSWORD_LEN:
+        totp_enabled = get_user_totp_enabled(current_user.id)
+        return render_template(
+            "settings.html",
+            totp_enabled=totp_enabled,
+            error="Current passwors is incorrect"
+        ), 403
+
     if len(new_password) < 8:
         totp_enabled = get_user_totp_enabled(current_user.id)
         return render_template(
@@ -762,12 +833,12 @@ def change_password():
             error="Password must be at least 8 characters"
         ), 400
 
-    elif len(new_password) > 30:
+    elif len(new_password) > MAX_PASSWORD_LEN:
         totp_enabled = get_user_totp_enabled(current_user.id)
         return render_template(
             "settings.html",
             totp_enabled=totp_enabled,
-            error="Password cant be more than 30 characters"
+            error=f"Password cant be more than {MAX_PASSWORD_LEN} characters"
         ), 400
 
     if current_password == new_password:
@@ -819,6 +890,16 @@ def update_profile():
         session["settings_error"] = "Username is required"
         return redirect("/settings")
 
+    if not USERNAME_RE.fullmatch(username):
+        session["settings_error"] = (
+            "Username must be 3-30 characters (letters, numbers, _ and - only)"
+        )
+        return redirect("/settings")
+
+    if email and not EMAIL_RE.fullmatch(email):
+        session["settings_error"] = "Invalid email address"
+        return redirect("/settings")
+
     s = get_session()
     try:
         existing = (
@@ -835,62 +916,76 @@ def update_profile():
         old_avatar_path = user.avatar_path if user else None
 
         avatar_path = old_avatar_path
+        # Avatar is optional on this endpoint: only touch file handling when
+        # one was actually uploaded, otherwise username/email-only updates
+        # would crash trying to read attributes off a missing file.
         if avatar and avatar.filename:
             allowed_mimes = {"image/png", "image/jpeg"}
             if avatar.mimetype not in allowed_mimes:
                 session["settings_error"] = "Invalid image type for avatar"
                 return redirect("/settings")
 
-        filename = secure_filename(avatar.filename)
-        ext = os.path.splitext(filename)[1].lower()
-        allowed_exts = {".png", ".jpg", ".jpeg"}
-        if not ext or ext not in allowed_exts:
-            session["settings_error"] = "Invalid image file extension for avatar"
-            return redirect("/settings")
-
-        avatar.stream.seek(0, os.SEEK_END)
-        size = avatar.stream.tell()
-        avatar.stream.seek(0)
-        if size > 2 * 1024 * 1024:
-            session["settings_error"] = "Avatar image too large (max 2MB)"
-            return redirect("/settings")
-
-        avatar.stream.seek(0)
-        file_type = imghdr.what(None, h=avatar.stream.read(512))
-        avatar.stream.seek(0)
-
-        if file_type not in {"jpeg", "png"}:
-            session["settings_error"] = "Invalid image content"
-            return redirect("/settings")
-        Image.MAX_IMAGE_PIXELS = 10_000_000
-        try:
-            avatar.stream.seek(0)
-            img = Image.open(avatar.stream)
-
-            if img.width > 2000 or img.height > 2000:
-                session["settings_error"] = "Image dimensions too large, maximum is 2000x2000"
+            filename = secure_filename(avatar.filename)
+            ext = os.path.splitext(filename)[1].lower()
+            allowed_exts = {".png", ".jpg", ".jpeg"}
+            if not ext or ext not in allowed_exts:
+                session["settings_error"] = "Invalid image file extension for avatar"
                 return redirect("/settings")
-        except Exception:
-            session["settings_error"] = "Uploaded file is not a valid image"
-            return redirect("/settings")
-        finally:
+
+            avatar.stream.seek(0, os.SEEK_END)
+            size = avatar.stream.tell()
+            avatar.stream.seek(0)
+            if size > 2 * 1024 * 1024:
+                session["settings_error"] = "Avatar image too large (max 2MB)"
+                return redirect("/settings")
+
+            avatar.stream.seek(0)
+            file_type = imghdr.what(None, h=avatar.stream.read(512))
             avatar.stream.seek(0)
 
-        upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "avatars")
-        os.makedirs(upload_dir, exist_ok=True)
-        random_name = f"user_{current_user.id}_{username}_{secrets.token_hex(32)}.jpg"
-        avatar_path = os.path.join("uploads", "avatars", random_name)
-        full_path = os.path.join(os.path.dirname(__file__), avatar_path)
-        img = img.convert("RGB")
-        img.save(full_path, format="JPEG", quality=85)
+            if file_type not in {"jpeg", "png"}:
+                session["settings_error"] = "Invalid image content"
+                return redirect("/settings")
 
-        if old_avatar_path:
-            old_full = os.path.join(os.path.dirname(__file__), old_avatar_path)
+            avatar.stream.seek(0)
+            raw_bytes = avatar.stream.read()
+            avatar.stream.seek(0)
+            if not _clamav_scan_clean(raw_bytes):
+                session["settings_error"] = "Uploaded file failed the malware scan"
+                return redirect("/settings")
+
+            Image.MAX_IMAGE_PIXELS = 10_000_000
             try:
-                if os.path.isfile(old_full):
-                    os.remove(old_full)
+                avatar.stream.seek(0)
+                img = Image.open(avatar.stream)
+
+                if img.width > 2000 or img.height > 2000:
+                    session["settings_error"] = "Image dimensions too large, maximum is 2000x2000"
+                    return redirect("/settings")
             except Exception:
-                pass
+                session["settings_error"] = "Uploaded file is not a valid image"
+                return redirect("/settings")
+            finally:
+                avatar.stream.seek(0)
+
+            upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "avatars")
+            os.makedirs(upload_dir, exist_ok=True)
+            # Filename is derived only from the numeric user id and a random
+            # token -- never from attacker-controlled input like `username` --
+            # to rule out path traversal / arbitrary file write via the name.
+            random_name = f"user_{current_user.id}_{secrets.token_hex(32)}.jpg"
+            avatar_path = os.path.join("uploads", "avatars", random_name)
+            full_path = os.path.join(os.path.dirname(__file__), avatar_path)
+            img = img.convert("RGB")
+            img.save(full_path, format="JPEG", quality=85)
+
+            if old_avatar_path:
+                old_full = os.path.join(os.path.dirname(__file__), old_avatar_path)
+                try:
+                    if os.path.isfile(old_full):
+                        os.remove(old_full)
+                except Exception:
+                    pass
 
         if user:
             user.username = username
@@ -1063,6 +1158,9 @@ def disable_email_otp():
     if not password or not otp:
         return jsonify({"ok": False, "error": "Missing fields."}), 400
 
+    if len(password) > MAX_PASSWORD_LEN:
+        return jsonify({"ok": False, "error": "Invalid password."}), 400
+
     s = get_session()
     try:
         user = s.get(DbUser, int(current_user.id))
@@ -1210,9 +1308,9 @@ def admin_create_user():
 
     if role not in {"admin", "soc"}:
         return jsonify({"ok": False, "error": "Invalid role"}), 400
-    if not re.fullmatch(r"[a-zA-Z0-9_-]{3,30}", username or ""):
+    if not USERNAME_RE.fullmatch(username or ""):
         return jsonify({"ok": False, "error": "Invalid username"}), 400
-    if len(password) < 12 or len(password) > 64:
+    if len(password) < 12 or len(password) > MAX_PASSWORD_LEN:
         return jsonify({"ok": False, "error": "Password must be 12-64 characters"}), 400
 
     password_hash = ph.hash(password)
@@ -1260,7 +1358,7 @@ def admin_delete_user(user_id: int):
 def admin_reset_password(user_id: int):
     data = request.json or {}
     new_password = data.get("new_password") or ""
-    if len(new_password) < 12 or len(new_password) > 64:
+    if len(new_password) < 12 or len(new_password) > MAX_PASSWORD_LEN:
         return jsonify({"ok": False, "error": "Password must be 12-64 characters"}), 400
 
     s = get_session()
@@ -1397,16 +1495,39 @@ def ids_engine_health():
 
 
 # --- Sensor telemetry push (ids_engine.py → Web UI stats) ---
+_SENSOR_TOKEN_WARNED = False
+
+
 @app.route("/ids/update", methods=["POST"])
 def ids_sensor_update():
     """
     Receive live counters from the IDS sensor process (api_client.sender).
     Logs are read from MySQL by /ids/logs; this endpoint only syncs stats.
+
+    Secured solely by IDS_SENSOR_TOKEN: the request is accepted only if
+    X-IDS-TOKEN matches it exactly (constant-time compare). There is no
+    IP-allow-list bypass -- anyone who can reach this port, allow-listed or
+    not, must still present the correct token to push telemetry. If the
+    token isn't configured on the server, the endpoint fails closed (rejects
+    everything) rather than silently accepting unauthenticated requests.
     """
     expected_token = os.environ.get("IDS_SENSOR_TOKEN", "")
-    if expected_token:
-        if request.headers.get("X-IDS-TOKEN") != expected_token:
-            return api_error("unauthorized", status_code=401, code="unauthorized")
+    if not expected_token:
+        global _SENSOR_TOKEN_WARNED
+        if not _SENSOR_TOKEN_WARNED:
+            import logging
+
+            logging.getLogger(__name__).error(
+                "IDS_SENSOR_TOKEN is not set; rejecting all /ids/update requests. "
+                "Set IDS_SENSOR_TOKEN in the .env shared by uni-srver.py and "
+                "ids_engine.py to re-enable sensor telemetry."
+            )
+            _SENSOR_TOKEN_WARNED = True
+        return api_error("sensor token not configured", status_code=503, code="token_not_configured")
+
+    supplied_token = request.headers.get("X-IDS-TOKEN", "")
+    if not secrets.compare_digest(supplied_token, expected_token):
+        return api_error("unauthorized", status_code=401, code="unauthorized")
 
     body = request.get_json(silent=True) or {}
     incoming = body.get("stats") or {}
@@ -1442,6 +1563,11 @@ def ids_event_stream():
 
 @app.route("/metrics")
 def prometheus_metrics():
+    # Prometheus metrics can leak operational detail; restrict scraping to
+    # the same trusted network the rate limiter already whitelists instead
+    # of leaving it open to any caller.
+    if request.remote_addr not in ALLOWED_IPS:
+        abort(403)
     return Response(export_prometheus(), mimetype="text/plain; version=0.0.4")
 
 
@@ -1680,6 +1806,13 @@ if __name__ == "__main__":
     _start_ids_sensor_if_enabled()
     use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
     if use_ssl:
-        app.run(host="0.0.0.0", port=5000, ssl_context="adhoc")
+        # "adhoc" (a fresh self-signed cert each run) is what Werkzeug's own
+        # docs call out as unsuitable for production. Prefer a real
+        # cert/key pair when the operator provides one, and only fall back
+        # to adhoc (today's default behavior) when they don't.
+        cert_file = os.getenv("SSL_CERT_FILE")
+        key_file = os.getenv("SSL_KEY_FILE")
+        ssl_context = (cert_file, key_file) if cert_file and key_file else "adhoc"
+        app.run(host="0.0.0.0", port=5000, ssl_context=ssl_context)
     else:
         app.run(host="0.0.0.0", port=5000)

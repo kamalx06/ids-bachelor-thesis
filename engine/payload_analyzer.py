@@ -1,4 +1,7 @@
+import base64
+import html
 import re
+from urllib.parse import unquote
 
 ATTACK_PATTERNS = {
     "SQLi": [
