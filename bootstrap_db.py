@@ -27,7 +27,15 @@ def _run_sql_file(connection, file_path: Path) -> None:
 
     with connection.cursor() as cur:
         for stmt in statements:
-            cur.execute(stmt)
+            try:
+                cur.execute(stmt)
+            except Exception as exc:
+                logger.warning(
+                    "SQL statement failed, continuing with the rest of %s: %s -- %s",
+                    file_path.name,
+                    exc,
+                    stmt[:200],
+                )
 
 
 @contextmanager

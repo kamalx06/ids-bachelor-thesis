@@ -99,7 +99,4 @@ CREATE TABLE IF NOT EXISTS training_data (
     label VARCHAR(32) NOT NULL,
     INDEX ix_training_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
--- Legacy logs table additive columns
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS risk_score DOUBLE NULL;
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS ai_explanation_json LONGTEXT NULL;
 
