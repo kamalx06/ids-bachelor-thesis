@@ -118,13 +118,21 @@ document.addEventListener("DOMContentLoaded", () => {
             body: JSON.stringify({ username, password })
         });
         const data = await res.json();
-        if (!res.ok || !data.ok) {
-            throw new Error(data.error || "Failed to start email verification.");
+        if (!res.ok || !data.success) {
+            const msg = (data && data.error && data.error.message) || "Failed to start email verification.";
+            throw new Error(msg);
         }
     }
 
     form.addEventListener("submit", async (e) => {
         if (allowSubmit) return;
+
+        // If the OTP step is already rendered, this submit is meant for
+        // /login (username + password + otp + otp_method are all in the form).
+        // Let the browser submit natively — do not re-run /check_totp.
+        if (otpStepContainer && otpStepContainer.children.length > 0) {
+            return;
+        }
 
         e.preventDefault();
 
@@ -162,10 +170,14 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Login failed");
-            const totpRequired = !!data.totp_required;
-            const emailOtpEnabled = !!data.email_otp_enabled;
-            const maskedEmail = data.masked_email || "";
+            if (!res.ok || !data.success) {
+                const msg = (data && data.error && data.error.message) || "Login failed";
+                throw new Error(msg);
+            }
+            const payload = data.data || {};
+            const totpRequired = !!payload.totp_required;
+            const emailOtpEnabled = !!payload.email_otp_enabled;
+            const maskedEmail = payload.masked_email || "";
 
             if (!totpRequired && !emailOtpEnabled) {
                 allowSubmit = true;

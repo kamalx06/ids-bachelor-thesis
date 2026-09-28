@@ -79,7 +79,7 @@ async function handleVerifyClick() {
         if (data.ok) {
             showAlert("TOTP verified and enabled.", "info");
         } else {
-            showAlert(data.error || "Invalid OTP. TOTP has been disabled.", "error");
+            showAlert(data.error || "Invalid OTP. Please try again.", "error");
         }
 
         setTimeout(function () {

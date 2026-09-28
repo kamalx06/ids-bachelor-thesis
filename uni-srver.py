@@ -3,10 +3,12 @@ from flask_login import LoginManager, login_user, login_required, logout_user, U
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.exceptions import Forbidden
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from argon2.low_level import Type
-from datetime import timedelta,datetime,timezone
+from datetime import timedelta, datetime, timezone
 from threading import Lock
 from threading import Thread
 import pyotp
@@ -21,8 +23,8 @@ from email.message import EmailMessage
 from PIL import Image
 import re
 import pyclamd
-import imghdr
 import json
+import hashlib
 from storage.memory_store import stats, logs, sync_stats_from_persistence
 from storage.mysql_store import (
     aggregate_log_stats,
@@ -57,28 +59,57 @@ app = Flask(__name__)
 # NOTE: SECRET_KEY must come from FLASK_SECRET (not a fresh secrets.token_hex()
 # generated at import time) so that sessions/CSRF tokens stay valid across
 # process restarts and across multiple worker processes in production.
+_use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SECURE=_use_ssl,
     SESSION_COOKIE_SAMESITE="Strict",
     PERMANENT_SESSION_LIFETIME=timedelta(minutes=60),
     SESSION_REFRESH_EACH_REQUEST=True,
-    MAX_CONTENT_LENGTH=2* 1024 * 1024,
-    SECRET_KEY=FLASK_SECRET
+    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+    SECRET_KEY=FLASK_SECRET,
 )
 
+# --- Reverse proxy handling -------------------------------------------------
+# Trust X-Forwarded-* only if TRUSTED_PROXIES > 0.
+# 0 = directly exposed, 1 = single reverse proxy, etc.
+_TRUSTED_PROXIES = int(os.getenv("TRUSTED_PROXIES", "0") or "0")
+if _TRUSTED_PROXIES > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=_TRUSTED_PROXIES,
+        x_proto=_TRUSTED_PROXIES,
+        x_host=_TRUSTED_PROXIES,
+    )
+
 limiter = Limiter(get_remote_address, app=app, default_limits=["400 per day", "100 per hour"])
-ALLOWED_IPS = {
-    "192.168.122.1",
-    "127.0.0.1",
-    "::1",
-}
+# Only loopback. Do NOT include proxy IPs here.
+ALLOWED_IPS = {"127.0.0.1", "::1"}
+
+
 @limiter.request_filter
 def whitelist_my_ip():
     return request.remote_addr in ALLOWED_IPS
+
+
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
+
+
+@login_manager.unauthorized_handler
+def _unauthorized():
+    if request.path.startswith(("/ids/", "/admin/api/")):
+        return api_error("Authentication required", status_code=401, code="unauthorized")
+    return redirect(login_manager.login_view)
+
+
+@app.errorhandler(Forbidden)
+def _forbidden(e):
+    if request.path.startswith(("/ids/", "/admin/api/")):
+        return api_error("Forbidden", status_code=403, code="forbidden")
+    return e
+
 
 lock = Lock()
 
@@ -86,13 +117,11 @@ ph = PasswordHasher(
     time_cost=3,
     memory_cost=65536,
     parallelism=2,
-    type=Type.ID
+    type=Type.ID,
 )
 
 # Shared bounds so every entry point that hashes/verifies a password agrees
-# on the same limits. Keeping these in one place also avoids the previous
-# mismatch where /login capped passwords at 30 chars while admin-created
-# accounts could be given up to 64 -- locking those users out forever.
+# on the same limits.
 MAX_USERNAME_LEN = 30
 MAX_PASSWORD_LEN = 64
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,30}$")
@@ -104,11 +133,55 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DUMMY_PASSWORD_HASH = ph.hash(secrets.token_hex(32))
 
 
+def utcnow():
+    """Naive UTC now — replaces deprecated datetime.utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _pwd_fingerprint(password_hash: str) -> str:
+    """Session binding: derived from the password hash, so any password
+    change (self or admin) invalidates existing sessions automatically."""
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:32]
+
+
+def _otp_matches(supplied: str, stored: str | None) -> bool:
+    if not stored or not supplied:
+        return False
+    return secrets.compare_digest(supplied, stored)
+
+
+def _record_password_failure(user_id: int) -> None:
+    """Increment failed_attempts and lock after 5 (mirrors /login)."""
+    s = get_session()
+    try:
+        u = s.get(DbUser, int(user_id))
+        if not u:
+            return
+        failed = int(u.failed_attempts or 0) + 1
+        if failed >= 5:
+            u.locked_until = (utcnow() + timedelta(minutes=15)).isoformat()
+        u.failed_attempts = failed
+        s.commit()
+    finally:
+        s.close()
+
+
+def _check_account_locked(user_row) -> bool:
+    locked_until = getattr(user_row, "locked_until", None)
+    if not locked_until:
+        return False
+    try:
+        return utcnow() < datetime.fromisoformat(locked_until)
+    except Exception:
+        return False
+
+
 def _equalize_auth_timing(password: str) -> None:
     try:
         ph.verify(_DUMMY_PASSWORD_HASH, password)
     except Exception:
         pass
+
 
 @app.before_request
 def strict_request_validation():
@@ -127,16 +200,18 @@ def strict_request_validation():
                 return {"error": "invalid length"}, 413
         except ValueError:
             return {"error": "bad request"}, 400
-    if request.method in ("POST", "PUT"):
+
+    if request.method in ("POST", "PUT", "PATCH"):
         if not request.content_type:
             return {"error": "content-type required"}, 400
+
 
 @app.after_request
 def secure_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "frame-ancestors 'none'; "
@@ -145,6 +220,7 @@ def secure_headers(response):
         "style-src 'self' 'unsafe-inline'"
     )
     return response
+
 
 def generate_csrf_token():
     token = session.get("_csrf_token")
@@ -214,17 +290,36 @@ class User(UserMixin):
         self.totp_secret = totp_secret
         self.totp_enabled = bool(totp_enabled)
 
+
 @login_manager.user_loader
 def load_user(user_id):
     s = get_session()
     try:
         row = s.get(DbUser, int(user_id))
-        if row:
-            return User(row.id, row.username, row.password_hash, row.role, row.totp_secret, row.totp_enabled)
-        return None
+        if not row:
+            return None
+
+        # Password change / admin reset → hash differs → kill session.
+        stored_fp = session.get("pwd_fp")
+        if not stored_fp or stored_fp != _pwd_fingerprint(row.password_hash):
+            session.clear()
+            return None
+
+        # Account locked → kill session immediately.
+        if row.locked_until:
+            try:
+                if utcnow() < datetime.fromisoformat(row.locked_until):
+                    session.clear()
+                    return None
+            except Exception:
+                pass
+
+        return User(
+            row.id, row.username, row.password_hash,
+            row.role, row.totp_secret, row.totp_enabled,
+        )
     finally:
         s.close()
-    return None
 
 
 def role_required(*allowed_roles: str):
@@ -282,8 +377,7 @@ def _clamav_scan_clean(data: bytes) -> bool:
 
     Returns False only when the daemon actively reports the content as
     infected. If clamd is unreachable/unconfigured we fail open (allow the
-    upload) but log it loudly, since the avatar is already re-encoded via
-    Pillow afterwards, which strips most embedded-payload tricks anyway.
+    upload) but log it loudly.
     """
     import logging
 
@@ -313,7 +407,10 @@ def _clamav_scan_clean(data: bytes) -> bool:
 
 def send_email_otp(to_email: str, code: str, purpose: str = "Login verification") -> None:
     host = SMTP_HOST
-    port = SMTP_PORT
+    try:
+        port = int(SMTP_PORT)
+    except (TypeError, ValueError):
+        raise RuntimeError("SMTP_PORT must be an integer")
     user = SMTP_USER
     password = SMTP_PASSWORD
     sender = SMTP_FROM
@@ -331,16 +428,18 @@ def send_email_otp(to_email: str, code: str, purpose: str = "Login verification"
         "If you did not request this, you can ignore this email."
     )
 
-    with smtplib.SMTP(host, port) as smtp:
+    with smtplib.SMTP(host, port, timeout=10) as smtp:
         smtp.starttls()
         smtp.login(user, password)
         smtp.send_message(msg)
+
 
 @app.route("/")
 def index():
     if current_user.is_authenticated:
         return redirect("/dashboard")
     return redirect("/login")
+
 
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
@@ -359,6 +458,7 @@ def login():
 
     if len(username) > MAX_USERNAME_LEN or len(password) > MAX_PASSWORD_LEN:
         return render_login_error("Invalid credentials", 401)
+
     otp = (request.form.get("otp") or "").strip()
     otp_method = (request.form.get("otp_method") or "").strip()
 
@@ -391,7 +491,7 @@ def login():
     email_otp_code_expires = row.email_otp_code_expires
 
     if locked_until:
-        if datetime.utcnow() < datetime.fromisoformat(locked_until):
+        if utcnow() < datetime.fromisoformat(locked_until):
             return render_login_error("Account locked. Try later.", 403)
 
     try:
@@ -411,7 +511,7 @@ def login():
         failed_attempts += 1
 
         if failed_attempts >= 5:
-            lock_time = datetime.utcnow() + timedelta(minutes=15)
+            lock_time = utcnow() + timedelta(minutes=15)
             s = get_session()
             try:
                 u = s.get(DbUser, int(user_id))
@@ -432,26 +532,30 @@ def login():
                 s.close()
         return render_login_error(error_msg, 401)
 
+    def _otp_fail():
+        _record_password_failure(user_id)
+        return render_login_error(error_msg, 401)
+
     try:
         if not totp_enabled and not email_otp_enabled:
             pass
 
         elif totp_enabled and not email_otp_enabled:
             if not otp or not totp_secret:
-                return render_login_error(error_msg, 401)
+                return _otp_fail()
             totp = pyotp.TOTP(totp_secret)
             if not totp.verify(otp, valid_window=1):
-                return render_login_error(error_msg, 401)
+                return _otp_fail()
 
         elif email_otp_enabled and not totp_enabled:
             if not otp or not email_otp_code or not email_otp_code_expires:
-                return render_login_error(error_msg, 401)
+                return _otp_fail()
             try:
                 expires_at = datetime.fromisoformat(email_otp_code_expires)
             except Exception:
-                return render_login_error(error_msg, 401)
-            if datetime.utcnow() > expires_at or otp != email_otp_code:
-                return render_login_error(error_msg, 401)
+                return _otp_fail()
+            if utcnow() > expires_at or not _otp_matches(otp, email_otp_code):
+                return _otp_fail()
             s = get_session()
             try:
                 u = s.get(DbUser, int(user_id))
@@ -465,20 +569,20 @@ def login():
         else:
             if otp_method == "totp":
                 if not otp or not totp_secret:
-                    return render_login_error(error_msg, 401)
+                    return _otp_fail()
                 totp = pyotp.TOTP(totp_secret)
                 if not totp.verify(otp, valid_window=1):
-                    return render_login_error(error_msg, 401)
+                    return _otp_fail()
 
             elif otp_method == "email":
                 if not otp or not email_otp_code or not email_otp_code_expires:
-                    return render_login_error(error_msg, 401)
+                    return _otp_fail()
                 try:
                     expires_at = datetime.fromisoformat(email_otp_code_expires)
                 except Exception:
-                    return render_login_error(error_msg, 401)
-                if datetime.utcnow() > expires_at or otp != email_otp_code:
-                    return render_login_error(error_msg, 401)
+                    return _otp_fail()
+                if utcnow() > expires_at or not _otp_matches(otp, email_otp_code):
+                    return _otp_fail()
                 s = get_session()
                 try:
                     u = s.get(DbUser, int(user_id))
@@ -489,7 +593,7 @@ def login():
                 finally:
                     s.close()
             else:
-                return render_login_error(error_msg, 401)
+                return _otp_fail()
     except Exception:
         return render_login_error(error_msg, 401)
 
@@ -502,6 +606,7 @@ def login():
             s.commit()
             # Build the in-memory user object using the canonical DB role
             session.clear()
+            session["pwd_fp"] = _pwd_fingerprint(u.password_hash)
             login_user(
                 User(
                     id=u.id,
@@ -516,6 +621,7 @@ def login():
         s.close()
 
     return redirect("/dashboard")
+
 
 @app.route("/check_totp", methods=["POST"])
 @limiter.limit("5 per minute")
@@ -543,10 +649,18 @@ def check_totp():
             _equalize_auth_timing(password)
             return api_error("Invalid credentials", status_code=401)
 
+        if _check_account_locked(user):
+            return api_error("Account locked. Try later.", status_code=403)
+
         try:
             ph.verify(user.password_hash, password)
         except VerifyMismatchError:
+            _record_password_failure(user.id)
             return api_error("Invalid credentials", status_code=401)
+
+        user.failed_attempts = 0
+        user.locked_until = None
+        s.commit()
 
         totp_enabled = bool(user.totp_enabled)
         email_otp_enabled = bool(user.email_otp_enabled)
@@ -597,10 +711,18 @@ def start_login_email_otp():
             _equalize_auth_timing(password)
             return api_error("Invalid credentials", status_code=401)
 
+        if _check_account_locked(user):
+            return api_error("Account locked. Try later.", status_code=403)
+
         try:
             ph.verify(user.password_hash, password)
         except VerifyMismatchError:
+            _record_password_failure(user.id)
             return api_error("Invalid credentials", status_code=401)
+
+        user.failed_attempts = 0
+        user.locked_until = None
+        s.commit()
 
         if not user.email or not user.email_otp_enabled:
             return api_error(
@@ -608,7 +730,7 @@ def start_login_email_otp():
             )
 
         code = f"{secrets.randbelow(10**6):06d}"
-        expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+        expires_at = (utcnow() + timedelta(minutes=5)).isoformat()
 
         user.email_otp_code = code
         user.email_otp_code_expires = expires_at
@@ -622,6 +744,7 @@ def start_login_email_otp():
         return api_ok({"ok": True})
     finally:
         s.close()
+
 
 @app.route("/settings")
 @login_required
@@ -677,6 +800,7 @@ def user_avatar():
 
     return send_file(full_path)
 
+
 @app.route("/enable_totp", methods=["POST"])
 @login_required
 @csrf_protect
@@ -688,15 +812,14 @@ def enable_totp():
             return "User not found", 404
         if user.totp_enabled:
             return "TOTP already enabled", 400
-        secret = pyotp.random_base32()
-        user.totp_secret = secret
-        user.totp_enabled = True
-        user.totp_qr_shown = False
-        s.commit()
+
+        # Stash candidate secret in session. Only commit after verification.
+        session["totp_setup_secret"] = pyotp.random_base32()
+        session["totp_setup_qr_shown"] = False
+        session["show_totp_qr"] = True
     finally:
         s.close()
 
-    session["show_totp_qr"] = True
     return redirect("/settings")
 
 
@@ -749,7 +872,7 @@ def disable_totp():
             return redirect("/settings")
 
         totp = pyotp.TOTP(user.totp_secret)
-        if not totp.verify(otp):
+        if not totp.verify(otp, valid_window=1):
             if request.is_json:
                 return jsonify({"ok": False, "error": "Invalid OTP"}), 400
             session["settings_error"] = "Invalid OTP"
@@ -762,6 +885,9 @@ def disable_totp():
     finally:
         s.close()
 
+    session.pop("totp_setup_secret", None)
+    session.pop("totp_setup_qr_shown", None)
+
     if request.is_json:
         return jsonify({"ok": True}), 200
     return redirect("/settings")
@@ -772,10 +898,19 @@ def disable_totp():
 @csrf_protect
 def verify_new_totp():
     data = request.json or {}
-    otp = data.get("otp")
+    otp = (data.get("otp") or "").strip()
 
     if not otp:
         return jsonify({"ok": False, "error": "Missing OTP"}), 400
+
+    pending_secret = session.get("totp_setup_secret")
+    if not pending_secret:
+        return jsonify({"ok": False, "error": "No pending TOTP setup"}), 400
+
+    totp = pyotp.TOTP(pending_secret)
+    if not totp.verify(otp, valid_window=1):
+        # Do NOT disable or clear anything — allow retry while pending.
+        return jsonify({"ok": False, "error": "Invalid OTP"}), 400
 
     s = get_session()
     try:
@@ -783,22 +918,16 @@ def verify_new_totp():
         if not user:
             return jsonify({"ok": False, "error": "User not found"}), 404
 
-        if not user.totp_enabled or not user.totp_secret:
-            return jsonify({"ok": False, "error": "TOTP not enabled"}), 400
-
-        totp = pyotp.TOTP(user.totp_secret)
-        if not totp.verify(otp, valid_window=1):
-            user.totp_enabled = False
-            user.totp_secret = None
-            user.totp_qr_shown = False
-            s.commit()
-            return jsonify(
-                {"ok": False, "error": "Invalid OTP. TOTP has been disabled."}
-            ), 200
-
-        return jsonify({"ok": True}), 200
+        user.totp_secret = pending_secret
+        user.totp_enabled = True
+        user.totp_qr_shown = True
+        s.commit()
     finally:
         s.close()
+
+    session.pop("totp_setup_secret", None)
+    session.pop("totp_setup_qr_shown", None)
+    return jsonify({"ok": True}), 200
 
 
 @app.route("/change_password", methods=["POST"])
@@ -808,74 +937,59 @@ def change_password():
 
     current_password = request.form.get("current_password")
     new_password = request.form.get("new_password")
+    otp = (request.form.get("otp") or "").strip()
 
     if not current_password or not new_password:
-        totp_enabled = get_user_totp_enabled(current_user.id)
-        return render_template(
-            "settings.html",
-            totp_enabled=totp_enabled,
-            error="Missing password fields"
-        ), 400
+        session["settings_error"] = "Missing password fields"
+        return redirect("/settings")
 
     if len(current_password) > MAX_PASSWORD_LEN:
-        totp_enabled = get_user_totp_enabled(current_user.id)
-        return render_template(
-            "settings.html",
-            totp_enabled=totp_enabled,
-            error="Current passwors is incorrect"
-        ), 403
+        session["settings_error"] = "Current password is incorrect"
+        return redirect("/settings")
 
     if len(new_password) < 8:
-        totp_enabled = get_user_totp_enabled(current_user.id)
-        return render_template(
-            "settings.html",
-            totp_enabled=totp_enabled,
-            error="Password must be at least 8 characters"
-        ), 400
+        session["settings_error"] = "Password must be at least 8 characters"
+        return redirect("/settings")
 
-    elif len(new_password) > MAX_PASSWORD_LEN:
-        totp_enabled = get_user_totp_enabled(current_user.id)
-        return render_template(
-            "settings.html",
-            totp_enabled=totp_enabled,
-            error=f"Password cant be more than {MAX_PASSWORD_LEN} characters"
-        ), 400
+    if len(new_password) > MAX_PASSWORD_LEN:
+        session["settings_error"] = f"Password cant be more than {MAX_PASSWORD_LEN} characters"
+        return redirect("/settings")
 
     if current_password == new_password:
-        totp_enabled = get_user_totp_enabled(current_user.id)
-        return render_template(
-            "settings.html",
-            totp_enabled=totp_enabled,
-            error="Passwords should be different"
-        ), 400
+        session["settings_error"] = "Passwords should be different"
+        return redirect("/settings")
 
     s = get_session()
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
-            totp_enabled = get_user_totp_enabled(current_user.id)
-            return render_template(
-                "settings.html",
-                totp_enabled=totp_enabled,
-                error="User not found"
-            ), 404
+            session["settings_error"] = "User not found"
+            return redirect("/settings")
+
+        # If TOTP is enabled, require a valid OTP before changing password.
+        if user.totp_enabled:
+            if not otp or not user.totp_secret:
+                session["settings_error"] = "OTP required"
+                return redirect("/settings")
+            if not pyotp.TOTP(user.totp_secret).verify(otp, valid_window=1):
+                session["settings_error"] = "Invalid OTP"
+                return redirect("/settings")
 
         try:
             ph.verify(user.password_hash, current_password)
         except VerifyMismatchError:
-            totp_enabled = get_user_totp_enabled(current_user.id)
-            return render_template(
-                "settings.html",
-                totp_enabled=totp_enabled,
-                error="Current passwors is incorrect"
-            ), 403
+            session["settings_error"] = "Current password is incorrect"
+            return redirect("/settings")
 
         user.password_hash = ph.hash(new_password)
         s.commit()
     finally:
         s.close()
 
-    return redirect("/settings")
+    # Force re-login so the new pwd_fp is required.
+    logout_user()
+    session.clear()
+    return redirect("/login")
 
 
 @app.route("/update_profile", methods=["POST"])
@@ -885,6 +999,7 @@ def update_profile():
     username = (request.form.get("username") or "").strip()
     email = (request.form.get("email") or "").strip() or None
     avatar = request.files.get("avatar")
+    confirm_password = request.form.get("confirm_password") or ""
 
     if not username:
         session["settings_error"] = "Username is required"
@@ -912,13 +1027,26 @@ def update_profile():
             return redirect("/settings")
 
         user = s.get(DbUser, int(current_user.id))
-        old_username = user.username if user else current_user.username
-        old_avatar_path = user.avatar_path if user else None
+        if not user:
+            session["settings_error"] = "User not found"
+            return redirect("/settings")
+
+        # Require password re-auth for profile changes.
+        if not confirm_password or len(confirm_password) > MAX_PASSWORD_LEN:
+            session["settings_error"] = "Password confirmation required"
+            return redirect("/settings")
+        try:
+            ph.verify(user.password_hash, confirm_password)
+        except VerifyMismatchError:
+            session["settings_error"] = "Invalid password"
+            return redirect("/settings")
+
+        old_username = user.username
+        old_avatar_path = user.avatar_path
 
         avatar_path = old_avatar_path
         # Avatar is optional on this endpoint: only touch file handling when
-        # one was actually uploaded, otherwise username/email-only updates
-        # would crash trying to read attributes off a missing file.
+        # one was actually uploaded.
         if avatar and avatar.filename:
             allowed_mimes = {"image/png", "image/jpeg"}
             if avatar.mimetype not in allowed_mimes:
@@ -940,10 +1068,17 @@ def update_profile():
                 return redirect("/settings")
 
             avatar.stream.seek(0)
-            file_type = imghdr.what(None, h=avatar.stream.read(512))
-            avatar.stream.seek(0)
+            try:
+                probe = Image.open(avatar.stream)
+                probe.verify()
+                detected = (probe.format or "").upper()
+            except Exception:
+                session["settings_error"] = "Invalid image content"
+                return redirect("/settings")
+            finally:
+                avatar.stream.seek(0)
 
-            if file_type not in {"jpeg", "png"}:
+            if detected not in {"JPEG", "PNG"}:
                 session["settings_error"] = "Invalid image content"
                 return redirect("/settings")
 
@@ -971,8 +1106,7 @@ def update_profile():
             upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "avatars")
             os.makedirs(upload_dir, exist_ok=True)
             # Filename is derived only from the numeric user id and a random
-            # token -- never from attacker-controlled input like `username` --
-            # to rule out path traversal / arbitrary file write via the name.
+            # token -- never from attacker-controlled input like `username`.
             random_name = f"user_{current_user.id}_{secrets.token_hex(32)}.jpg"
             avatar_path = os.path.join("uploads", "avatars", random_name)
             full_path = os.path.join(os.path.dirname(__file__), avatar_path)
@@ -987,11 +1121,10 @@ def update_profile():
                 except Exception:
                     pass
 
-        if user:
-            user.username = username
-            user.email = email
-            user.avatar_path = avatar_path
-            s.commit()
+        user.username = username
+        user.email = email
+        user.avatar_path = avatar_path
+        s.commit()
     finally:
         s.close()
 
@@ -1001,38 +1134,47 @@ def update_profile():
 
     return redirect("/settings")
 
+
 @app.route("/logout")
 @login_required
 def logout():
     logout_user()
     return redirect("/login")
 
+
 @app.route("/totp_qr")
 @login_required
 def totp_qr():
-    s = get_session()
-    try:
-        user = s.get(DbUser, int(current_user.id))
-        if not user or not user.totp_secret:
-            return "TOTP not enabled", 400
-        if user.totp_qr_shown:
+    secret = session.get("totp_setup_secret")
+    qr_shown_key = "totp_setup_qr_shown"
+
+    if not secret:
+        s = get_session()
+        try:
+            user = s.get(DbUser, int(current_user.id))
+            if not user or not user.totp_secret:
+                return "TOTP not enabled", 400
+            if user.totp_qr_shown:
+                return "TOTP QR code can be shown only once", 400
+            secret = user.totp_secret
+            user.totp_qr_shown = True
+            s.commit()
+        finally:
+            s.close()
+    else:
+        if session.get(qr_shown_key):
             return "TOTP QR code can be shown only once", 400
+        session[qr_shown_key] = True
 
-        uri = pyotp.TOTP(user.totp_secret).provisioning_uri(
-            name=current_user.username,
-            issuer_name="Kamal-Practical-Work-1",
-        )
+    uri = pyotp.TOTP(secret).provisioning_uri(
+        name=current_user.username,
+        issuer_name="Kamal-Practical-Work-1",
+    )
 
-        img = qrcode.make(uri, box_size=4, border=2)
-        buf = io.BytesIO()
-        img.save(buf)
-        buf.seek(0)
-
-        user.totp_qr_shown = True
-        s.commit()
-    finally:
-        s.close()
-
+    img = qrcode.make(uri, box_size=4, border=2)
+    buf = io.BytesIO()
+    img.save(buf)
+    buf.seek(0)
     return send_file(buf, mimetype="image/png")
 
 
@@ -1050,7 +1192,7 @@ def start_email_otp():
         email = user.email
 
         code = f"{secrets.randbelow(10**6):06d}"
-        expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+        expires_at = (utcnow() + timedelta(minutes=5)).isoformat()
 
         user.email_otp_code = code
         user.email_otp_code_expires = expires_at
@@ -1088,7 +1230,7 @@ def start_email_otp_disable():
             return jsonify({"ok": False, "error": "Email-based OTP is not enabled."}), 400
 
         code = f"{secrets.randbelow(10**6):06d}"
-        expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+        expires_at = (utcnow() + timedelta(minutes=5)).isoformat()
 
         user.email_otp_code = code
         user.email_otp_code_expires = expires_at
@@ -1102,6 +1244,7 @@ def start_email_otp_disable():
         return jsonify({"ok": False, "error": "Failed to send email."}), 500
 
     return jsonify({"ok": True}), 200
+
 
 @app.route("/verify_email_otp", methods=["POST"])
 @login_required
@@ -1131,10 +1274,10 @@ def verify_email_otp():
         except Exception:
             return jsonify({"ok": False, "error": "Invalid code state."}), 400
 
-        if datetime.utcnow() > expires_at:
+        if utcnow() > expires_at:
             return jsonify({"ok": False, "error": "Code expired."}), 400
 
-        if otp != stored_code:
+        if not _otp_matches(otp, stored_code):
             return jsonify({"ok": False, "error": "Invalid code."}), 400
 
         user.email_otp_enabled = True
@@ -1188,10 +1331,10 @@ def disable_email_otp():
         except Exception:
             return jsonify({"ok": False, "error": "Invalid code state."}), 400
 
-        if datetime.utcnow() > expires_at:
+        if utcnow() > expires_at:
             return jsonify({"ok": False, "error": "Code expired."}), 400
 
-        if otp != stored_code:
+        if not _otp_matches(otp, stored_code):
             return jsonify({"ok": False, "error": "Invalid code."}), 400
 
         user.email_otp_enabled = False
@@ -1202,12 +1345,14 @@ def disable_email_otp():
     finally:
         s.close()
 
+
 @app.route("/dashboard")
 @login_required
 @csrf_protect
 @role_required("admin", "soc")
 def dashboard():
     return render_template("dashboard.html")
+
 
 @app.route("/admin")
 @login_required
@@ -1312,6 +1457,9 @@ def admin_create_user():
         return jsonify({"ok": False, "error": "Invalid username"}), 400
     if len(password) < 12 or len(password) > MAX_PASSWORD_LEN:
         return jsonify({"ok": False, "error": "Password must be 12-64 characters"}), 400
+
+    if email and not EMAIL_RE.fullmatch(email):
+        return jsonify({"ok": False, "error": "Invalid email"}), 400
 
     password_hash = ph.hash(password)
     s = get_session()
@@ -1438,10 +1586,6 @@ def admin_set_lock(user_id: int):
     data = request.json or {}
     locked = bool(data.get("locked"))
 
-    if int(current_user.id) == int(user_id) and not locked:
-        # unlocking self is fine, locking self is blocked below
-        pass
-
     if int(current_user.id) == int(user_id) and locked:
         return jsonify({"ok": False, "error": "You cannot lock your own account."}), 400
 
@@ -1452,7 +1596,7 @@ def admin_set_lock(user_id: int):
             return jsonify({"ok": False, "error": "User not found"}), 404
 
         if locked:
-            lock_time = datetime.utcnow() + timedelta(hours=8)
+            lock_time = utcnow() + timedelta(hours=8)
             user.locked_until = lock_time.isoformat()
         else:
             user.locked_until = None
@@ -1484,6 +1628,7 @@ def admin_user_avatar(user_id: int):
 
     return send_file(full_path)
 
+
 # --- IDS engine health (dashboard live indicator) ---
 @app.route("/ids/health")
 @login_required
@@ -1503,13 +1648,6 @@ def ids_sensor_update():
     """
     Receive live counters from the IDS sensor process (api_client.sender).
     Logs are read from MySQL by /ids/logs; this endpoint only syncs stats.
-
-    Secured solely by IDS_SENSOR_TOKEN: the request is accepted only if
-    X-IDS-TOKEN matches it exactly (constant-time compare). There is no
-    IP-allow-list bypass -- anyone who can reach this port, allow-listed or
-    not, must still present the correct token to push telemetry. If the
-    token isn't configured on the server, the endpoint fails closed (rejects
-    everything) rather than silently accepting unauthenticated requests.
     """
     expected_token = os.environ.get("IDS_SENSOR_TOKEN", "")
     if not expected_token:
@@ -1563,9 +1701,7 @@ def ids_event_stream():
 
 @app.route("/metrics")
 def prometheus_metrics():
-    # Prometheus metrics can leak operational detail; restrict scraping to
-    # the same trusted network the rate limiter already whitelists instead
-    # of leaving it open to any caller.
+    # Restrict scraping to trusted networks.
     if request.remote_addr not in ALLOWED_IPS:
         abort(403)
     return Response(export_prometheus(), mimetype="text/plain; version=0.0.4")
@@ -1665,7 +1801,7 @@ def ids_traffic_timeseries():
 @role_required("admin", "soc")
 def get_logs():
     try:
-        limit = int(request.args.get("limit", 200))
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
         start_time = request.args.get("start_time", type=float)
         end_time = request.args.get("end_time", type=float)
         min_ai_score = request.args.get("min_ai_score", type=float)
@@ -1727,7 +1863,7 @@ def search_logs_api():
     ai_label = request.args.get("ai_label")
     reason = request.args.get("reason")
     has_threat_intel = request.args.get("has_threat_intel")
-    limit = int(request.args.get("limit", 200))
+    limit = max(1, min(int(request.args.get("limit", 200)), 1000))
     start_time = request.args.get("start_time", type=float)
     end_time = request.args.get("end_time", type=float)
     min_ai_score = request.args.get("min_ai_score", type=float)
@@ -1777,6 +1913,7 @@ def search_logs_api():
         },
     )
 
+
 def _start_ids_sensor_if_enabled() -> None:
     enabled = (os.getenv("WEBUI_START_IDS_SENSOR", "true") or "true").lower() == "true"
     if not enabled:
@@ -1798,10 +1935,7 @@ if __name__ == "__main__":
 
     bootstrap_database()
 
-    # Check the AI models are on disk (training fresh from the CIC-IDS CSV
-    # if they're not) before anything else starts. If there's no model and
-    # no CSV to bootstrap one from, stop here rather than starting a web UI
-    # / IDS sensor that can only fail once traffic actually needs scoring.
+    # Check the AI models are on disk before anything else starts.
     if not ensure_models_available():
         import logging
 
@@ -1820,10 +1954,6 @@ if __name__ == "__main__":
     _start_ids_sensor_if_enabled()
     use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
     if use_ssl:
-        # "adhoc" (a fresh self-signed cert each run) is what Werkzeug's own
-        # docs call out as unsuitable for production. Prefer a real
-        # cert/key pair when the operator provides one, and only fall back
-        # to adhoc (today's default behavior) when they don't.
         cert_file = os.getenv("SSL_CERT_FILE")
         key_file = os.getenv("SSL_KEY_FILE")
         ssl_context = (cert_file, key_file) if cert_file and key_file else "adhoc"
