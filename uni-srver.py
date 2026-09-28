@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template, send_file, session, flash, jsonify, abort, Response
+from flask import Flask, request, redirect, render_template, send_file, session, jsonify, abort, Response
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -9,7 +9,6 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from argon2.low_level import Type
 from datetime import timedelta, datetime, timezone
-from threading import Lock
 from threading import Thread
 import pyotp
 import qrcode
@@ -39,7 +38,7 @@ from storage.persistence import (
 )
 from ids.metrics import export_prometheus
 from ids.websocket_updates import sse_stream, broadcast
-from storage.db import get_session, shutdown_session
+from storage.db import get_session
 from storage.models import User as DbUser
 import time
 
@@ -110,8 +109,6 @@ def _forbidden(e):
         return api_error("Forbidden", status_code=403, code="forbidden")
     return e
 
-
-lock = Lock()
 
 ph = PasswordHasher(
     time_cost=3,
@@ -218,6 +215,10 @@ def secure_headers(response):
         "base-uri 'self'; "
         "script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline'"
+    )
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), "
+        "payment=(), usb=(), magnetometer=(), gyroscope=()"
     )
     return response
 
@@ -350,15 +351,6 @@ def start_retention_worker():
             import logging
             logging.getLogger(__name__).error("Retention worker failed", exc_info=True)
         time.sleep(3600)
-
-
-def get_user_totp_enabled(user_id):
-    s = get_session()
-    try:
-        row = s.get(DbUser, int(user_id))
-        return bool(row.totp_enabled) if row else False
-    finally:
-        s.close()
 
 
 def mask_email(email_value: str) -> str:
@@ -606,6 +598,7 @@ def login():
             s.commit()
             # Build the in-memory user object using the canonical DB role
             session.clear()
+            session.permanent = True
             session["pwd_fp"] = _pwd_fingerprint(u.password_hash)
             login_user(
                 User(
@@ -825,6 +818,7 @@ def enable_totp():
 
 @app.route("/disable_totp", methods=["POST"])
 @login_required
+@limiter.limit("10 per hour")
 @csrf_protect
 def disable_totp():
     if request.is_json:
@@ -895,6 +889,7 @@ def disable_totp():
 
 @app.route("/verify_new_totp", methods=["POST"])
 @login_required
+@limiter.limit("10 per hour")
 @csrf_protect
 def verify_new_totp():
     data = request.json or {}
@@ -932,6 +927,7 @@ def verify_new_totp():
 
 @app.route("/change_password", methods=["POST"])
 @login_required
+@limiter.limit("5 per hour")
 @csrf_protect
 def change_password():
 
@@ -994,6 +990,7 @@ def change_password():
 
 @app.route("/update_profile", methods=["POST"])
 @login_required
+@limiter.limit("30 per hour")
 @csrf_protect
 def update_profile():
     username = (request.form.get("username") or "").strip()
