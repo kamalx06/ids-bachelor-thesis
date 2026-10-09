@@ -371,11 +371,11 @@ Bypass matching:
 > ClientHello bypasses the whole flow. IP and CIDR rules use the same
 > mechanism but match on the source address instead of the SNI bytes.
 >
-> The trade-off versus mitmproxy-style in-process bypass: the firewall
-> cannot see the difference between a legitimate SNI and the same byte
-> sequence appearing coincidentally in another ClientHello. In practice
-> this does not occur for domain-name patterns, but very short or
-> generic patterns (`api`, `cdn`) are best avoided.
+> The trade-off of firewall-layer bypass: the kernel cannot distinguish
+> a legitimate SNI from the same byte sequence appearing coincidentally
+> in another ClientHello. In practice this does not occur for
+> domain-name patterns, but very short or generic patterns (`api`,
+> `cdn`) are best avoided.
 
 ### Limitations
 

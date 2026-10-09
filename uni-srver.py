@@ -2512,7 +2512,7 @@ def ssl_api_ca_download():
 def ssl_api_ca_regenerate():
     """
     Regenerate the root CA. Destructive: every client that trusted the
-    old CA must re-install. The interceptor must be restarted for mitmproxy
+    old CA must re-install. The interceptor must be restarted for sslsplit
     to pick up the new cert.
     """
     from ssl_inspect import ca as ca_module
