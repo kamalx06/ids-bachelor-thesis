@@ -685,33 +685,16 @@ ids-bachelor-thesis/
 ├── setup.py
 ├── env-example
 ├── ai/                     # ML training, inference, CIC features
-│   ├── models/             # Trained .pkl artifacts (gitignored)
-│   ├── data/               # cic_ids.csv (gitignored)
-│   ├── classifier.py       # Live inference
-│   ├── retrainer.py        # Retraining pipeline
-│   └── train_ids_models.py # Bootstrap training
 ├── alerts/                 # Email burst alerts
 ├── api_client/             # Sensor → server telemetry
 ├── config/                 # Blocklists, performance tuning
 ├── engine/                 # Sniffer, parsers, behavior detection
 ├── ids/                    # Queues, workers, metrics, AI orchestration
 ├── intelligence/           # TI, Zeek, sensor process, MITRE, sensor auth
-│   ├── reputation.py       # AbuseIPDB, VirusTotal, ip-api
-│   ├── zeek_integration.py # Zeek log correlation
-│   ├── sensor_process.py   # Heartbeat and PID management
-│   ├── sensor_auth.py      # HMAC request signing for the telemetry channel
-│   └── mitre.py            # ATT&CK mapping + coverage
 ├── runtime/                # Entry points and process supervisor
 ├── ssl_inspect/            # Optional TLS interception (mitmproxy)
-│   ├── ca.py               # Root CA generation and metadata
-│   ├── bypass.py           # Per-SNI / per-IP bypass rules
-│   ├── interceptor.py      # mitmproxy addon — feeds decrypted flows
-│   ├── engine.py           # Standalone SSL process launcher
-│   └── iptables.py         # Redirect helper (install / remove)
 ├── static/                 # CSS and JavaScript assets
 ├── storage/                # DB layer, ORM models, persistence
-│   ├── audit.py            # Audit trail helper + queries
-│   └── analytics.py        # Threat pattern aggregation + query functions
 └── templates/              # HTML templates (login, dashboard, admin, settings, analytics, ssl, audit)
 ```
 
