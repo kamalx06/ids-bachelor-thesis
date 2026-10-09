@@ -3,7 +3,7 @@
 An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception (via sslsplit), threat analytics with recurring-pattern detection, an immutable audit trail, HMAC-signed sensor telemetry, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-Proprietary-lightgrey)](#license)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 **Author:** Kamal Khalilov  
 **Version:** 1.3.0  
@@ -1128,7 +1128,9 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 
 ## License
 
-Proprietary — © Kamal Khalilov. See the repository for terms.
+This project is licensed under the **GNU General Public License v3.0 or later** (GPL-3.0-or-later). See the [`LICENSE`](LICENSE) file for the full text.
+
+Copyright (C) 2026 Kamal Khalilov
 
 ---
 
