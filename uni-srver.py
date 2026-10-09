@@ -70,6 +70,7 @@ app = Flask(__name__)
 # process restarts and across multiple worker processes in production.
 _use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
 app.config.update(
+    SESSION_COOKIE_NAME="__Host-ids_session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=_use_ssl,
     SESSION_COOKIE_SAMESITE="Strict",
@@ -132,13 +133,14 @@ def whitelist_trusted():
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
+login_manager.session_protection = "strong"
 
 
 @login_manager.unauthorized_handler
 def _unauthorized():
     audit(
         "auth.unauthorized",
-        outcome="failure",
+        outcome="denied",
         detail={
             "path": request.path,
             "method": request.method,
@@ -163,7 +165,7 @@ def _forbidden(e):
 
     audit(
         "auth.forbidden",
-        outcome="failure",
+        outcome="denied",
         detail={
             "path": request.path,
             "method": request.method,
@@ -180,7 +182,7 @@ def _forbidden(e):
 def _rate_limited(e):
     audit(
         "rate_limit.exceeded",
-        outcome="failure",
+        outcome="denied",
         detail={
             "path": request.path,
             "method": request.method,
@@ -284,7 +286,7 @@ def strict_request_validation():
     def _reject(reason, status, **extra):
         audit(
             "request.rejected",
-            outcome="failure",
+            outcome="denied",
             detail={
                 "reason": reason,
                 "path": request.path,
@@ -333,6 +335,9 @@ def secure_headers(response):
         "geolocation=(), microphone=(), camera=(), "
         "payment=(), usb=(), magnetometer=(), gyroscope=()"
     )
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
     return response
 
 
@@ -356,7 +361,7 @@ def verify_csrf():
     if not session_token or not candidate or not secrets.compare_digest(session_token, candidate):
         audit(
             "csrf.failure",
-            outcome="failure",
+            outcome="denied",
             detail={
                 "path": request.path,
                 "method": request.method,
@@ -588,7 +593,7 @@ def index():
 
 
 @app.route("/login", methods=["GET", "POST"])
-@limiter.limit("10 per minute")
+@limiter.limit("5 per minute")
 @csrf_protect
 def login():
     if request.method == "GET":
@@ -1550,6 +1555,7 @@ def update_profile():
 def logout():
     audit("logout")
     logout_user()
+    session.clear()
     return redirect("/login")
 
 
@@ -2729,7 +2735,7 @@ def _audit_sensor_auth_failure_once(remote_ip: str | None, reason: str) -> None:
     _SENSOR_AUTH_AUDITED.add(key)
     audit(
         "sensor.auth_failure",
-        outcome="failure",
+        outcome="denied",
         actor_ip=remote_ip,
         detail={"reason": reason, "deduped": True},
     )
