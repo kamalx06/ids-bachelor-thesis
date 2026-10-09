@@ -125,13 +125,13 @@ about:config → security.enterprise_roots.enabled = true
             <p class="dash-section-desc">These commands redirect TCP/443 into the interceptor. Run as root.</p>
         </div>
         <pre style="background:#060a14; padding:16px; border-radius:10px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#cbd5e1; overflow:auto;"># Redirect 443 → interceptor
-sudo python -m ssl.iptables install
+sudo python -m ssl_inspect.iptables install
 
 # Exclude the IDS host itself (adjust IP)
 sudo iptables -t nat -I PREROUTING 1 -s &lt;IDS_HOST_IP&gt; -j RETURN
 
 # When done
-sudo python -m ssl.iptables remove</pre>
+sudo python -m ssl_inspect.iptables remove</pre>
     </section>
 
     <section class="card dash-logs-panel">
