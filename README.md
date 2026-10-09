@@ -1,12 +1,12 @@
 # Enterprise AI IDS
 
-An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, threat analytics with recurring-pattern detection, an immutable audit trail, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
+An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, threat analytics with recurring-pattern detection, an immutable audit trail, HMAC-signed sensor telemetry, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-lightgrey)](#license)
 
 **Author:** Kamal Khalilov  
-**Version:** 1.2.0  
+**Version:** 1.3.0  
 **Repository:** [github.com/kamalx06/ids-bachelor-thesis](https://github.com/kamalx06/ids-bachelor-thesis)
 
 ---
@@ -22,6 +22,7 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - [Threat Analytics](#threat-analytics)
 - [MITRE ATT&CK Mapping](#mitre-attck-mapping)
 - [Audit Log](#audit-log)
+- [Signed Sensor Telemetry](#signed-sensor-telemetry)
 - [Web Dashboard](#web-dashboard)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
@@ -47,7 +48,9 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - **Alerts** — Rate-limited email notifications for high-risk bursts, deduplicated per source IP.
 - **Secure authentication** — Argon2 password hashing, TOTP, email OTP, role-based access control, and admin user management.
 - **Persistence** — MySQL 8+ for logs and statistics; SQLite for local ML training samples.
-- **Observability** — Prometheus metrics at `/metrics` and structured IDS health endpoints.
+- **Signed sensor telemetry** — Every message from the IDS engine to the web UI is authenticated with an HMAC-SHA256 signature over `method/path/timestamp/nonce/SHA256(body)`. The shared secret is never transmitted, replay is prevented by a nonce + timestamp window, and body tampering is detected. See [`intelligence/sensor_auth.py`](intelligence/sensor_auth.py).
+- **Observability** — Prometheus metrics at `/metrics`, structured IDS health endpoints, and an immutable audit trail.
+- **Enterprise-tuned rate limiting** — Loopback and authenticated sessions are exempt from default limits; login, MFA, and admin endpoints retain their own per-route throttles.
 - **Resilient architecture** — IDS engine, web UI, and SSL interceptor run as separate OS processes; a sensor crash does not take down the dashboard.
 
 ---
@@ -73,7 +76,7 @@ flowchart TB
     SSL --> MYSQL
     WEB --> AUDIT["Audit Trail<br/>(privileged actions)"]
     AUDIT --> MYSQL
-    IDS -->|"Telemetry API"| WEB
+    IDS -->|"HMAC-signed<br/>Telemetry API"| WEB
     WEB --> DASH["Dashboard / Admin UI"]
     WEB --> SSE["SSE live updates"]
     WEB --> MYSQL
@@ -94,7 +97,7 @@ flowchart TB
 | `ai/` | ML training, inference, and model retraining |
 | `engine/` | Sniffer, flow manager, HTTP/DNS/payload parsers |
 | `ids/` | Packet queues, workers, metrics, AI analysis orchestration |
-| `intelligence/` | Reputation lookups, Zeek integration, sensor heartbeat, MITRE mapping |
+| `intelligence/` | Reputation lookups, Zeek integration, sensor heartbeat, MITRE mapping, HMAC request signing for the telemetry channel |
 | `storage/` | MySQL/SQLite persistence, ORM models, migrations, analytics aggregation, audit trail |
 | `alerts/` | Email alerting for high-risk bursts |
 | `api_client/` | IDS → web UI telemetry over HTTP(S) |
@@ -157,6 +160,8 @@ Copy `env-example` to `.env` and adjust. All configuration is read at process st
 | `WEB_UI_SSL` | `true` = HTTPS on port 5000 with an ad-hoc cert (default) |
 | `LOG_LEVEL` | Logging level (`INFO`, `DEBUG`, `WARNING`, `ERROR`) |
 | `TRUSTED_PROXIES` | Number of reverse proxies to trust for `X-Forwarded-*` headers (default: `0`) |
+| `RATELIMIT_DEFAULT_HOURLY` | Aggregate hourly rate limit for unauthenticated traffic (default: `5000`). Loopback and logged-in sessions are exempt. |
+| `RATELIMIT_DEFAULT_DAILY` | Aggregate daily rate limit for unauthenticated traffic (default: `50000`) |
 
 ### MySQL
 
@@ -188,7 +193,9 @@ Copy `env-example` to `.env` and adjust. All configuration is read at process st
 | `IDS_DANGEROUS_THRESHOLD` | Risk score for *dangerous* classification (default: `0.78`) |
 | `API_URL` | Telemetry endpoint (e.g. `https://localhost:5000/ids`) |
 | `IDS_TLS_VERIFY` | Set `false` for self-signed local HTTPS |
-| `IDS_SENSOR_TOKEN` | Shared secret required by `/ids/update`. Must match on both `ids_engine.py` and `uni-srver.py` |
+| `IDS_SENSOR_TOKEN` | Shared HMAC secret for signing every telemetry POST to `/ids/update`. Must match on both `ids_engine.py` and `uni-srver.py`. Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `IDS_AUTH_MAX_SKEW_SEC` | Maximum tolerated clock difference between sensor and web UI, in seconds (default: `60`). Increase only if the two hosts are not NTP-synced. |
+| `IDS_AUTH_NONCE_RETENTION_SEC` | How long the server remembers seen nonces to detect replay (default: `300`). Must be ≥ `IDS_AUTH_MAX_SKEW_SEC`. |
 
 ### IDS Performance Tuning
 
@@ -522,6 +529,120 @@ security posture — and it's the first thing an auditor asks for.
 
 ---
 
+## Signed Sensor Telemetry
+
+The IDS engine pushes live counters to the web UI on a fixed interval.
+Every message is authenticated, so the receiver can be certain that
+telemetry came from the sensor and was not modified in transit.
+
+### Wire format
+
+Each request carries three headers:
+
+| Header | Purpose |
+|--------|---------|
+| `X-IDS-Timestamp` | Unix seconds; server rejects anything outside the skew window |
+| `X-IDS-Nonce` | 16-byte hex, unique per request |
+| `X-IDS-Signature` | `HMAC-SHA256(secret, canonical).hexdigest()` |
+
+The signed payload is:
+
+```
+canonical = METHOD \n PATH \n TIMESTAMP \n NONCE \n SHA256(body)
+```
+
+The shared secret is used only as the HMAC key. **It is never transmitted
+on the wire.**
+
+### Server-side checks
+
+1. All three headers must be present.
+2. `|server_time − X-IDS-Timestamp| ≤ IDS_AUTH_MAX_SKEW_SEC`.
+3. The HMAC must match, compared with `hmac.compare_digest` (constant time).
+4. The nonce must be fresh — it is remembered for
+   `IDS_AUTH_NONCE_RETENTION_SEC` and any repeat is rejected.
+
+Any failure returns HTTP 401 with an `error.code` naming the reason
+(`missing_signing_headers`, `timestamp_out_of_window`, `bad_signature`,
+`replayed_nonce`). The sender logs the code on the first few failures
+and then suppresses repeats.
+
+### Why this design
+
+- **Bearer tokens leak permanently.** The previous scheme sent
+  `X-IDS-TOKEN: <shared-secret>` on every request. Anyone who captured
+  one request had the credential forever. HMAC-signed requests transmit
+  nothing that is useful to an attacker.
+- **Replay is a real threat on shared infrastructure.** If the request
+  passes through a proxy, log aggregator, or APM that terminates TLS,
+  the plaintext request is visible. Without a nonce, capturing one
+  request is enough to impersonate the sensor.
+- **Tamper detection matters even under TLS.** Terminating proxies can
+  rewrite bodies. With `SHA256(body)` inside the signed payload, any
+  modification is detectable.
+
+### Limitations
+
+- **In-process nonce store.** The nonce tracker lives in the web UI
+  process. With a single Flask worker, replay detection is exact.
+  Before running multiple workers (gunicorn + N, or a container
+  orchestrator), move the store to Redis or a MySQL table so all
+  workers share it. The module documents this.
+- **Clock dependence.** HMAC + timestamp only works if the two processes'
+  clocks agree within the skew window. On a single host this is
+  automatic; on two hosts, run NTP. If you cannot, raise
+  `IDS_AUTH_MAX_SKEW_SEC`.
+- **Complementary to TLS, not a replacement.** The signature authenticates
+  the message; TLS protects it in transit. Keep `IDS_TLS_VERIFY=true` in
+  production.
+
+### Verification
+
+```bash
+# Round-trip: signing then verifying succeeds
+python -c "
+from intelligence.sensor_auth import sign_request, verify_request, NonceTracker
+import time
+t = NonceTracker()
+h = sign_request('secret', 'POST', '/ids/update', b'{\"x\":1}', timestamp=int(time.time()))
+ok, reason = verify_request('secret', 'POST', '/ids/update', b'{\"x\":1}', h, t)
+assert ok, reason
+print('signed request accepted')
+"
+
+# Replay: re-using a signature is rejected
+python -c "
+from intelligence.sensor_auth import sign_request, verify_request, NonceTracker
+import time
+t = NonceTracker()
+h = sign_request('secret', 'POST', '/ids/update', b'{}', timestamp=int(time.time()))
+verify_request('secret', 'POST', '/ids/update', b'{}', h, t)
+ok, reason = verify_request('secret', 'POST', '/ids/update', b'{}', h, t)
+assert not ok and reason == 'replayed_nonce', reason
+print('replay rejected')
+"
+
+# Tamper: modifying the body invalidates the signature
+python -c "
+from intelligence.sensor_auth import sign_request, verify_request, NonceTracker
+import time
+t = NonceTracker()
+h = sign_request('secret', 'POST', '/ids/update', b'{\"total\":42}', timestamp=int(time.time()))
+ok, reason = verify_request('secret', 'POST', '/ids/update', b'{\"total\":99}', h, t)
+assert not ok and reason == 'bad_signature', reason
+print('tampered body rejected')
+"
+```
+
+### Migration
+
+The change is not backward-compatible with the previous bearer-token
+scheme. Both `api_client/sender.py` and `/ids/update` in `uni-srver.py`
+must be updated together. Nothing needs to change in `.env` — the
+existing `IDS_SENSOR_TOKEN` variable becomes the HMAC key.
+
+---
+
 ## Web Dashboard
 
 | Route | Description |
@@ -539,7 +660,7 @@ security posture — and it's the first thing an auditor asks for.
 | `/ids/logs` | Paginated log query (JSON) |
 | `/ids/search` | Advanced log search (JSON) |
 | `/ids/stream` | SSE live event stream |
-| `/ids/update` | Sensor telemetry ingest (token-protected) |
+| `/ids/update` | Sensor telemetry ingest (HMAC-signed) |
 | `/analytics/api/*` | Analytics query endpoints (including MITRE coverage) |
 | `/audit/api/*` | Audit query endpoints |
 | `/ssl/api/*` | SSL management endpoints |
@@ -574,10 +695,11 @@ ids-bachelor-thesis/
 ├── config/                 # Blocklists, performance tuning
 ├── engine/                 # Sniffer, parsers, behavior detection
 ├── ids/                    # Queues, workers, metrics, AI orchestration
-├── intelligence/           # TI, Zeek, sensor process, MITRE mapping
+├── intelligence/           # TI, Zeek, sensor process, MITRE, sensor auth
 │   ├── reputation.py       # AbuseIPDB, VirusTotal, ip-api
 │   ├── zeek_integration.py # Zeek log correlation
 │   ├── sensor_process.py   # Heartbeat and PID management
+│   ├── sensor_auth.py      # HMAC request signing for the telemetry channel
 │   └── mitre.py            # ATT&CK mapping + coverage
 ├── runtime/                # Entry points and process supervisor
 ├── ssl_inspect/            # Optional TLS interception (mitmproxy)
@@ -715,10 +837,11 @@ cp env-example .env
 
 Update `.env` with your MySQL credentials, a generated `FLASK_SECRET`, a strong `IDS_SENSOR_TOKEN`, and any optional API keys. See [Configuration](#configuration).
 
-Generate a fresh `FLASK_SECRET`:
+Generate fresh secrets:
 
 ```bash
-python -c "import secrets; print(secrets.token_hex(32))"
+python -c "import secrets; print('FLASK_SECRET=', secrets.token_hex(32))"
+python -c "import secrets; print('IDS_SENSOR_TOKEN=', secrets.token_urlsafe(48))"
 ```
 
 ### 6. Prepare the dataset
@@ -814,11 +937,12 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 
 - **Change all default credentials** before deploying to production.
 - **Generate a strong `FLASK_SECRET`** — never ship the placeholder from `env-example`. Sessions and CSRF tokens depend on it.
-- **Set `IDS_SENSOR_TOKEN`** to a long random value. Without it, `/ids/update` rejects all telemetry (returns 503).
+- **Set `IDS_SENSOR_TOKEN`** to a long random value. It is used as the HMAC key for the sensor → web UI telemetry channel — the secret itself is never transmitted. Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Without it, `/ids/update` rejects all telemetry (returns 503).
+- **Sensor telemetry is signed, not bearer-authenticated.** Every request is verified against the shared secret, a timestamp window, and a nonce; replays and tampered bodies are rejected with a diagnostic `error.code`. The nonce store is in-process; move it to Redis or MySQL before running multiple web workers.
 - **TLS**: the web UI uses self-signed TLS (`ssl_context="adhoc"`) by default. In production, front it with a reverse proxy (nginx, Caddy) that terminates real certificates. Set `TRUSTED_PROXIES=1` if behind exactly one proxy.
 - **`setcap` on the Python interpreter** grants packet-capture capabilities to *every* script that interpreter runs. For production, prefer a dedicated service user or a wrapper entry point that receives the capabilities.
 - **Packet capture and IDS deployment** should follow your organization's network monitoring policies and legal requirements.
-- **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs bypass limits by default; extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
+- **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs and authenticated sessions bypass the *default* limits — the dashboard's own polling generates several hundred requests per hour per open tab, and an authenticated SOC analyst is a trusted principal. Per-endpoint decorators on `/login` (10/min), `/check_totp` (5/min), and the MFA endpoints remain in force regardless. Tune the ceiling with `RATELIMIT_DEFAULT_HOURLY` and `RATELIMIT_DEFAULT_DAILY`. Extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
 - **`/metrics` is loopback-only by default.** If you scrape Prometheus from another host, add its IP to `ALLOWED_IPS`, or place a proxy in front that filters the endpoint.
 - **`ip-api.com` free tier is HTTP-only** and can be MITM'd. It contributes only a small weight to final scores; disable with `IPAPI_ENABLED=false` on untrusted networks.
 - **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/mitm-conf/mitmproxy-ca.pem` (chmod 600) and never commit it to source control.
@@ -841,6 +965,35 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 - Confirm `storage/ids-sensor.pid` and `storage/ids-sensor.heartbeat` exist and are fresh.
 - If the heartbeat file is older than `IDS_HEARTBEAT_STALE_SEC` (default 30s), the sensor is considered stalled.
 - Check `IDS_SENSOR_TOKEN` matches on both processes.
+
+### Sensor telemetry is rejected (HTTP 401 from `/ids/update`)
+
+The endpoint returns a specific `error.code` naming the failure. Look in
+the sensor's log (`logs/ids_engine.log`) for the first line beginning with
+`Telemetry rejected:`. Common cases:
+
+- **`missing_signing_headers`** — the sender was updated but the receiver
+  was not, or vice versa. Both `api_client/sender.py` and `/ids/update`
+  in `uni-srver.py` must be the signed-request version together.
+- **`bad_signature`** — the two processes have different values of
+  `IDS_SENSOR_TOKEN`. Both read it from the same `.env`, so verify
+  that both are reading the same file (the working directory when
+  running `python main.py` matters).
+- **`timestamp_out_of_window`** — the two hosts' clocks differ by more
+  than `IDS_AUTH_MAX_SKEW_SEC`. On a single host this should not happen;
+  on two hosts, run NTP. As a temporary mitigation, raise the value.
+- **`replayed_nonce`** — the same request was processed twice. This
+  should not happen unless there is a networking retry; if you see it
+  repeatedly, check for a proxy that replays requests.
+
+### Rate limits triggered by the dashboard itself
+
+If you see `ratelimit 5000 per 1 hour ... exceeded at endpoint:
+ids_engine_health` (or `get_stats`) in the log, the ceiling is too low
+for the current traffic pattern. Raise `RATELIMIT_DEFAULT_HOURLY` in
+`.env`. Authenticated sessions normally do not hit these limits — if
+they are, verify that `whitelist_trusted` in `uni-srver.py` is the
+current version (it exempts `current_user.is_authenticated`).
 
 ### Dashboard shows 0 events after a successful startup
 

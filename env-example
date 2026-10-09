@@ -51,6 +51,18 @@ IDS_DEBUG=false
 #IDS_LOG_BACKUP_COUNT=5
 
 # =============================================================================
+# Rate limiting (optional, enterprise-tuned defaults)
+# =============================================================================
+# Default limits for unauthenticated requests. Loopback and authenticated
+# sessions are exempted from these limits, but per-endpoint decorators
+# (login, MFA, admin actions) still apply. Raise the ceiling for
+# high-volume API consumers; lower it for stricter throttling of unknown
+# sources. The dashboard's own polling (health every 5s, stats every 10s)
+# is well under the default.
+RATELIMIT_DEFAULT_HOURLY=5000
+RATELIMIT_DEFAULT_DAILY=50000
+
+# =============================================================================
 # MySQL
 # =============================================================================
 MYSQL_HOST=127.0.0.1
@@ -182,9 +194,16 @@ IDS_TI_CACHE_TTL=3600
 # If WEB_UI_SSL=true, use https://localhost:5000/ids
 API_URL=https://localhost:5000/ids
 
-# Shared secret authenticating /ids/update. Must be identical on both sides
-# (ids_engine.py and uni-srver.py read it from the same .env).
-IDS_SENSOR_TOKEN=<generate-with-secrets.token_urlsafe(32)>
+# Shared HMAC secret used to sign every telemetry POST to /ids/update.
+# Must be identical on both sides (ids_engine.py and uni-srver.py read it
+# from the same .env). The secret is never transmitted on the wire — each
+# request carries an HMAC-SHA256 signature over method/path/timestamp/nonce/
+# SHA256(body), and the server verifies it in constant time. Replay is
+# prevented by a nonce + timestamp window.
+#
+# Longer is better: generate with
+#     python -c "import secrets; print(secrets.token_urlsafe(48))"
+IDS_SENSOR_TOKEN=<generate-with-secrets.token_urlsafe(48)>
 
 # Verify TLS certificates on the telemetry POST. Set to "false" when the
 # Web UI uses the ad-hoc self-signed certificate.
@@ -196,6 +215,17 @@ SEND_INTERVAL=5
 # Startup delay + max wait for the Web UI to come up before giving up.
 SENDER_STARTUP_DELAY=3
 SENDER_MAX_WAIT=45
+
+# Signed-request tolerances (seconds).
+#   * MAX_SKEW_SEC      — server rejects any request whose timestamp is
+#                         further than this from server time. 60s is safe
+#                         for single-host deployments with NTP. Raise only
+#                         if the sensor and web UI run on different hosts
+#                         without synchronized clocks.
+#   * NONCE_RETENTION_SEC — how long a nonce is remembered to detect replay.
+#                         Must be at least MAX_SKEW_SEC; 300s is generous.
+IDS_AUTH_MAX_SKEW_SEC=60
+IDS_AUTH_NONCE_RETENTION_SEC=300
 
 # =============================================================================
 # TLS interception (SSL decryption) — optional

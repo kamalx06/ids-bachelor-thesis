@@ -38,6 +38,7 @@ from storage.analytics import (
     get_weekly_summary,
 )
 from storage.audit import audit, cleanup_retention as audit_cleanup, distinct_actions as audit_actions, query_audit, stats_since as audit_stats
+from intelligence.sensor_auth import NonceTracker, verify_request
 from storage.persistence import (
     apply_telemetry_stats,
     init_persistence,
@@ -90,14 +91,42 @@ if _TRUSTED_PROXIES > 0:
         x_host=_TRUSTED_PROXIES,
     )
 
-limiter = Limiter(get_remote_address, app=app, default_limits=["400 per day", "100 per hour"])
-# Only loopback. Do NOT include proxy IPs here.
+# Enterprise-tuned rate limits. The default covers aggregate traffic from
+# any single source — loopback and authenticated sessions are exempted
+# below because:
+#   1. The dashboard polls /ids/health every 5s and /ids/stats every 10s
+#      from the browser, which alone is ~1200 requests/hour per open tab.
+#   2. Prometheus scrapes /metrics on its own schedule.
+#   3. An authenticated SOC analyst is a trusted principal — throttling
+#      them protects nothing and generates log noise.
+# Per-endpoint limits (login, MFA, admin) still apply because they are
+# registered with explicit @limiter.limit(...) decorators below.
+_DEFAULT_HOURLY = int(os.getenv("RATELIMIT_DEFAULT_HOURLY", "5000") or "5000")
+_DEFAULT_DAILY = int(os.getenv("RATELIMIT_DEFAULT_DAILY", "50000") or "50000")
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[f"{_DEFAULT_DAILY} per day", f"{_DEFAULT_HOURLY} per hour"],
+)
+
+# Loopback only. Do NOT include proxy IPs here.
 ALLOWED_IPS = {"127.0.0.1", "::1"}
 
 
 @limiter.request_filter
-def whitelist_my_ip():
-    return request.remote_addr in ALLOWED_IPS
+def whitelist_trusted():
+    """
+    Exempt loopback and authenticated sessions from the *default* limits.
+    Per-endpoint @limiter.limit decorators still apply, so login and MFA
+    remain throttled.
+    """
+    if request.remote_addr in ALLOWED_IPS:
+        return True
+    try:
+        return bool(current_user.is_authenticated)
+    except Exception:
+        return False
 
 
 login_manager = LoginManager()
@@ -2179,16 +2208,21 @@ def ids_engine_health():
 
 # --- Sensor telemetry push (ids_engine.py → Web UI stats) ---
 _SENSOR_TOKEN_WARNED = False
+_sensor_nonce_tracker = NonceTracker()
 
 
 @app.route("/ids/update", methods=["POST"])
 def ids_sensor_update():
     """
     Receive live counters from the IDS sensor process (api_client.sender).
-    Logs are read from MySQL by /ids/logs; this endpoint only syncs stats.
+
+    Authentication: HMAC-signed request. The sensor sends X-IDS-Timestamp,
+    X-IDS-Nonce, and X-IDS-Signature over the canonical representation of
+    method / path / timestamp / nonce / SHA256(body). The shared secret is
+    never transmitted. See intelligence/sensor_auth.py for the wire format.
     """
-    expected_token = os.environ.get("IDS_SENSOR_TOKEN", "")
-    if not expected_token:
+    expected_secret = os.environ.get("IDS_SENSOR_TOKEN", "")
+    if not expected_secret:
         global _SENSOR_TOKEN_WARNED
         if not _SENSOR_TOKEN_WARNED:
             import logging
@@ -2199,11 +2233,31 @@ def ids_sensor_update():
                 "ids_engine.py to re-enable sensor telemetry."
             )
             _SENSOR_TOKEN_WARNED = True
-        return api_error("sensor token not configured", status_code=503, code="token_not_configured")
+        return api_error(
+            "sensor secret not configured",
+            status_code=503,
+            code="token_not_configured",
+        )
 
-    supplied_token = request.headers.get("X-IDS-TOKEN", "")
-    if not secrets.compare_digest(supplied_token, expected_token):
-        return api_error("unauthorized", status_code=401, code="unauthorized")
+    # Raw body bytes are what the signature authenticates — do not read
+    # JSON first (that would consume the stream).
+    raw_body = request.get_data(cache=True)
+
+    ok, reason = verify_request(
+        expected_secret,
+        request.method,
+        request.path,
+        raw_body,
+        request.headers,
+        _sensor_nonce_tracker,
+    )
+    if not ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Sensor telemetry rejected: %s (remote=%s)",
+            reason, request.remote_addr,
+        )
+        return api_error("unauthorized", status_code=401, code=reason)
 
     body = request.get_json(silent=True) or {}
     incoming = body.get("stats") or {}
