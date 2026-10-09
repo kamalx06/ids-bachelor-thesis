@@ -75,6 +75,11 @@ def detect_dns(src_ip: str, dns_event: dict | None) -> list[str]:
     lock = _dns_locks[shard]
     table = _dns_activity[shard]
 
+    # Everything that mutates the shard table, appends to the deque, trims
+    # the window, or reads the deque happens inside the lock. The heuristic
+    # pass runs on an explicit snapshot (list(activity)) taken while the
+    # lock is held, so the counts are computed against a stable view even
+    # if another thread appends to the same src_ip a moment later.
     with lock:
         now = time.time()
 
@@ -91,50 +96,62 @@ def detect_dns(src_ip: str, dns_event: dict | None) -> list[str]:
                 for ip in stale:
                     table.pop(ip, None)
 
-        activity.append(
-        {
+        activity.append({
             "time": now,
             "qname": qname,
             "qtype": qtype,
             "base": _base_domain(qname),
             "len": len(qname),
             "entropy": shannon_entropy(qname.replace(".", "")),
-        }
-    )
+        })
 
-    # Drop old events
-    cutoff = now - DNS_WINDOW_SECONDS
-    while activity and activity[0]["time"] < cutoff:
-        activity.popleft()
+        # Drop old events — inside the lock so the trim can't race against
+        # another thread's append on the same deque.
+        cutoff = now - DNS_WINDOW_SECONDS
+        while activity and activity[0]["time"] < cutoff:
+            activity.popleft()
+
+        # Snapshot for the heuristic pass. Cheap for typical window sizes
+        # (a few dozen to a few hundred entries), and lets us release the
+        # lock before doing the O(N) work below.
+        snapshot = list(activity)
 
     reasons: list[str] = []
 
+    if not snapshot:
+        return reasons
+
     # Single-event heuristics
-    last = activity[-1]
+    last = snapshot[-1]
     if last["len"] >= DNS_LONG_QNAME:
         reasons.append("dns_long_qname")
     if last["entropy"] >= DNS_ENTROPY_SUSPICIOUS:
         reasons.append("dns_high_entropy_qname")
     # A single TXT query is normal (SPF, DKIM, various CDN health checks).
     # Only mark it when it's part of a burst or combined with high entropy.
-    if qtype == "TXT" and (last["entropy"] >= DNS_ENTROPY_SUSPICIOUS or last["len"] >= DNS_LONG_QNAME):
+    if qtype == "TXT" and (
+        last["entropy"] >= DNS_ENTROPY_SUSPICIOUS
+        or last["len"] >= DNS_LONG_QNAME
+    ):
         reasons.append("dns_txt_query")
 
-    # Window heuristics
-    unique_qnames = len({e["qname"] for e in activity})
+    # Window heuristics — all on the snapshot, not on the live deque.
+    unique_qnames = len({e["qname"] for e in snapshot})
     if unique_qnames >= DNS_UNIQUE_QNAMES_SUSPICIOUS:
         reasons.append("dns_many_unique_queries")
 
-    txt_count = sum(1 for e in activity if e["qtype"] == "TXT")
+    txt_count = sum(1 for e in snapshot if e["qtype"] == "TXT")
     if txt_count >= DNS_TXT_RATE_SUSPICIOUS:
         reasons.append("dns_txt_burst")
 
     # Subdomain churn to one base domain (common in tunneling)
     by_base = defaultdict(set)
-    for e in activity:
+    for e in snapshot:
         by_base[e["base"]].add(e["qname"])
     if by_base:
-        worst_base, worst_count = max(((b, len(s)) for b, s in by_base.items()), key=lambda x: x[1])
+        worst_base, worst_count = max(
+            ((b, len(s)) for b, s in by_base.items()), key=lambda x: x[1]
+        )
         if worst_count >= 25 and worst_base:
             reasons.append("dns_subdomain_churn")
 

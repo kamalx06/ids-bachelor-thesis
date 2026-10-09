@@ -23,6 +23,26 @@ except Exception:
     DNS = None
     DNSQR = None
 
+# Map the common qtype numbers to names so downstream heuristics can
+# match on "TXT", "A", "AAAA", etc. instead of the raw integer Scapy
+# exposes. Fall back to the decimal string for anything not in the map.
+_DNS_QTYPE_NAMES = {
+    1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR",
+    15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV",
+    41: "OPT", 43: "DS", 46: "RRSIG", 47: "NSEC",
+    48: "DNSKEY", 255: "ANY",
+}
+
+
+def _qtype_name(value) -> str:
+    if value is None:
+        return ""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return str(value).upper()
+    return _DNS_QTYPE_NAMES.get(n, str(n))
+
 _URL_REGEX = re.compile(rb"(?:GET|POST)\s+([^\s]+)")
 
 
@@ -51,9 +71,11 @@ def extract_dns_event(pkt) -> dict | None:
             if isinstance(q.qname, (bytes, bytearray))
             else str(q.qname)
         )
+        qtype_num = getattr(q, "qtype", None)
         return {
             "qname": qname,
-            "qtype": getattr(q, "qtype", None),
+            "qtype": _qtype_name(qtype_num),
+            "qtype_num": int(qtype_num) if isinstance(qtype_num, int) else None,
             "qdcount": int(getattr(dns_layer, "qdcount", 0) or 0),
         }
     except Exception:

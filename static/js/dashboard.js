@@ -469,16 +469,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       apiGet("/ids/stats").catch(() => null),
     ]);
 
-    // Only fetch the raw log page when the server-side timeseries came back
-    // empty; that's the only path that needs per-row detail.
-    let logsEnvelope = [];
-    if (!series || !Array.isArray(series.labels) || series.labels.length === 0) {
-      logsEnvelope = await apiGet("/ids/logs", {
-        start_time: start,
-        end_time: end,
-        limit: 2000,
-      }).catch(() => []);
-    }
+    // Top risky IPs, top domains, and the DNS tunnel chart are derived
+    // entirely from raw log rows — they cannot be computed from the
+    // aggregated timeseries. Fetch unconditionally.
+    const logsEnvelope = await apiGet("/ids/logs", {
+      start_time: start,
+      end_time: end,
+      limit: 2000,
+    }).catch(() => []);
 
     const logs = Array.isArray(logsEnvelope) ? logsEnvelope : [];
     const s =

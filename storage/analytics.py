@@ -119,15 +119,32 @@ def _extract_category(reasons_json: str | None) -> str | None:
     if not isinstance(reasons, list) or not reasons:
         return None
 
+    # Reputation verdicts of "safe" are positive signals, not threats.
+    # If they reached this list alongside attack signals, they arrived via
+    # the TI enrichment step that tags every lookup — they must not be
+    # reported as the event's "top threat category".
+    _POSITIVE_REPUTATION = {
+        "reputation_ip_safe",
+        "reputation_url_safe",
+        "reputation_ip_unknown",
+        "reputation_url_unknown",
+    }
+
     ranked = []
     for r in reasons:
         if not isinstance(r, str):
             continue
+        if r in _POSITIVE_REPUTATION:
+            continue
         if r.startswith(("http_", "payload_")):
             ranked.append((0, r))
-        elif r.startswith("reputation_"):
+        elif r in ("ml_attack", "anomaly", "strong_anomaly_detected",
+                   "high_rf_attack_probability", "combined_ml_signals"):
             ranked.append((1, r))
-        elif r in ("ml_attack", "anomaly", "strong_anomaly_detected"):
+        elif r.startswith("reputation_"):
+            # Suspicious / malicious reputation reasons are meaningful,
+            # but they should rank below concrete content matches and
+            # concrete ML attack signals.
             ranked.append((2, r))
         else:
             ranked.append((3, r))
