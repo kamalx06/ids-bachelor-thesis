@@ -1,6 +1,6 @@
 """
-Install / remove the iptables redirect that pushes TCP/443 through the
-TLS interceptor. Must be run as root.
+Install / remove / inspect the iptables redirect that pushes TCP/443
+through the TLS interceptor. Must be run as root.
 
     sudo python -m ssl_inspect.iptables install
     sudo python -m ssl_inspect.iptables remove
@@ -10,6 +10,10 @@ The install action is idempotent: it checks for the rule first and
 reports "already present" rather than appending a duplicate. --wait is
 passed to every invocation to avoid colliding with concurrent iptables
 operations from a host firewall daemon.
+
+Note that SNI bypass rules (which skip interception for specific
+hostnames) are managed separately by ssl_inspect/bypass.py, not here.
+This module only handles the base redirect.
 """
 
 from __future__ import annotations
@@ -63,10 +67,20 @@ def remove() -> None:
 
 
 def status() -> None:
+    print(f"Checking for: TCP/443 → REDIRECT to port {LISTEN_PORT}")
     if _rule_present():
         print(f"[ACTIVE] TCP/443 is redirected to port {LISTEN_PORT}")
     else:
         print("[INACTIVE] No redirect rule present")
+
+    # Show the full NAT PREROUTING chain so the operator can see where the
+    # redirect sits relative to any SNI bypass RETURN rules.
+    result = _iptables("-t", "nat", "-L", "PREROUTING", "-n", "--line-numbers", check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        print()
+        print("Current NAT PREROUTING chain:")
+        for line in result.stdout.splitlines():
+            print("  " + line)
 
 
 if __name__ == "__main__":
@@ -74,7 +88,9 @@ if __name__ == "__main__":
         print("TLS interception is Linux-only.", file=sys.stderr)
         sys.exit(1)
 
-    parser = argparse.ArgumentParser(description="Manage the TLS interceptor iptables redirect")
+    parser = argparse.ArgumentParser(
+        description="Manage the TLS interceptor iptables redirect",
+    )
     parser.add_argument("action", choices=("install", "remove", "status"))
     args = parser.parse_args()
 
