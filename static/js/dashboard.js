@@ -842,10 +842,18 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       const tdReasons = document.createElement("td");
       const reasons = Array.isArray(r.reasons) ? r.reasons.slice(0, 6) : [];
-      if (reasons.length === 0) tdReasons.textContent = "-";
-      else {
+      const mitre = Array.isArray(r.mitre) ? r.mitre : [];
+      if (reasons.length === 0 && mitre.length === 0) {
+        tdReasons.textContent = "-";
+      } else {
         for (const reason of reasons) {
           tdReasons.appendChild(tag(reason));
+          tdReasons.appendChild(document.createTextNode(" "));
+        }
+        for (const m of mitre.slice(0, 3)) {
+          const chip = tag(m.technique, "info");
+          chip.title = `${m.tactic}: ${m.name}`;
+          tdReasons.appendChild(chip);
           tdReasons.appendChild(document.createTextNode(" "));
         }
       }

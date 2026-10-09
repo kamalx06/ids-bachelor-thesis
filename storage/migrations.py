@@ -16,7 +16,20 @@ def run_migrations() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_legacy_logs_table()
     _migrate_packet_logs_bigint()
+    _migrate_packet_logs_mitre()
     logger.info("Database migrations applied")
+
+
+def _migrate_packet_logs_mitre() -> None:
+    """Add packet_logs.mitre_json on existing deployments."""
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE packet_logs ADD COLUMN mitre_json LONGTEXT NULL"
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("packet_logs mitre_json migration skipped: %s", exc)
 
 
 def _migrate_packet_logs_bigint() -> None:

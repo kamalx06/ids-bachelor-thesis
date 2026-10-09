@@ -31,6 +31,52 @@ function fmtDate(epochSec) {
   return d.toISOString().slice(0, 16).replace("T", " ");
 }
 
+function renderMitreCoverage(payload) {
+  const host = el("mitreCoverage");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const byTactic = payload.by_tactic || {};
+  const tactics = payload.tactics || [];
+
+  const summary = document.createElement("p");
+  summary.className = "small";
+  summary.style.marginBottom = "12px";
+  summary.textContent =
+    `${payload.triggered_techniques} of ${payload.total_techniques} mapped techniques triggered in the last ${payload.days} day${payload.days === 1 ? "" : "s"}.`;
+  host.appendChild(summary);
+
+  for (const tactic of tactics) {
+    const entries = byTactic[tactic] || [];
+    if (!entries.length) continue;
+
+    const row = document.createElement("div");
+    row.className = "mitre-tactic-row";
+
+    const label = document.createElement("div");
+    label.className = "mitre-tactic-label";
+    label.textContent = tactic;
+    row.appendChild(label);
+
+    const chips = document.createElement("div");
+    chips.className = "mitre-chip-grid";
+
+    for (const e of entries) {
+      const chip = document.createElement("span");
+      chip.className = "mitre-chip";
+      if (e.count > 0) {
+        chip.classList.add("mitre-chip--triggered");
+      }
+      chip.title = `${e.technique} — ${e.name}${e.count ? ` (${e.count} events)` : ""}`;
+      chip.textContent = `${e.technique} · ${e.name}${e.count ? ` (${e.count})` : ""}`;
+      chips.appendChild(chip);
+    }
+
+    row.appendChild(chips);
+    host.appendChild(row);
+  }
+}
+
 // --- Weekly summary chart ---
 let weeklyChart = null;
 
@@ -263,9 +309,10 @@ async function loadAll() {
     apiGet("/analytics/api/recurring-hosts", { min_days: 3, days: 30 }),
     apiGet("/analytics/api/top-threats", { days: 30 }),
     apiGet("/analytics/api/patterns", { days: 60 }),
+    apiGet("/analytics/api/mitre-coverage", { days: 30 }),
   ]);
 
-  const [summary, heatmap, ips, hosts, threats, patterns] = results;
+  const [summary, heatmap, ips, hosts, threats, patterns, mitre] = results;
 
   if (summary.status === "fulfilled") renderWeeklySummary(summary.value);
   if (heatmap.status === "fulfilled") renderHeatmap(heatmap.value);
@@ -273,6 +320,7 @@ async function loadAll() {
   if (hosts.status === "fulfilled") renderActorTable("recurringHostsTbody", hosts.value);
   if (threats.status === "fulfilled") renderTopThreats(threats.value);
   if (patterns.status === "fulfilled") renderPatterns(patterns.value);
+  if (mitre.status === "fulfilled") renderMitreCoverage(mitre.value);
 
   const failed = results.filter((r) => r.status === "rejected");
   if (failed.length) {

@@ -57,6 +57,7 @@ def _row_to_dict(r) -> dict:
         "dns_json": r.dns_json,
         "payload_preview": getattr(r, "payload_preview", None),
         "ai_explanation_json": getattr(r, "ai_explanation_json", None),
+        "mitre_json": getattr(r, "mitre_json", None),
     }
 
 

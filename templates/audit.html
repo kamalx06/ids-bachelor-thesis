@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit Log — AI IDS</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>Audit Log</h1>
+            <p class="dash-tagline">Immutable trail of privileged actions</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        <a href="/ssl" class="dash-nav-link">SSL</a>
+        <a href="/audit" class="dash-nav-link">Audit</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <div id="auditAlert" class="" aria-live="polite"></div>
+
+    <section class="dash-kpi-section">
+        <div class="dash-kpi-grid">
+            <article class="dash-kpi dash-kpi--neutral">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Entries (7d)</span>
+                    <span class="dash-kpi-value" id="auditTotal">—</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--danger">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Failures (7d)</span>
+                    <span class="dash-kpi-value" id="auditFailures">—</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--accent">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Distinct actors (7d)</span>
+                    <span class="dash-kpi-value" id="auditActors">—</span>
+                </div>
+            </article>
+        </div>
+    </section>
+
+    <section class="card dash-logs-panel">
+        <div class="dash-section-head">
+            <h2>Privileged actions</h2>
+            <p class="dash-section-desc">Logins, MFA changes, user administration, SSL management, and configuration.</p>
+        </div>
+
+        <div class="field-group dash-filter-grid">
+            <div class="field">
+                <label for="auditFilterAction">Action</label>
+                <select id="auditFilterAction"><option value="">Any</option></select>
+            </div>
+            <div class="field">
+                <label for="auditFilterActor">Actor username</label>
+                <input id="auditFilterActor" type="text" placeholder="e.g., admin" maxlength="64">
+            </div>
+            <div class="field">
+                <label for="auditFilterOutcome">Outcome</label>
+                <select id="auditFilterOutcome">
+                    <option value="">Any</option>
+                    <option value="success">Success</option>
+                    <option value="failure">Failure</option>
+                    <option value="denied">Denied</option>
+                </select>
+            </div>
+            <div class="field field--narrow">
+                <label>&nbsp;</label>
+                <button class="primary dash-btn" id="auditApplyBtn" type="button">Apply</button>
+            </div>
+            <div class="field field--narrow">
+                <label>&nbsp;</label>
+                <button class="secondary dash-btn" id="auditResetBtn" type="button">Reset</button>
+            </div>
+        </div>
+
+        <div class="dash-table-wrap">
+            <table class="dash-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp (UTC)</th>
+                        <th>Actor</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Outcome</th>
+                        <th>Client IP</th>
+                    </tr>
+                </thead>
+                <tbody id="auditTbody">
+                    <tr><td colspan="6" class="empty">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="dash-table-toolbar">
+            <div id="auditPager" class="pager"></div>
+        </div>
+    </section>
+</main>
+
+<div id="auditDetailModal" class="modal dash-modal" role="dialog" aria-modal="true" aria-label="Audit entry detail">
+    <div class="modal-card dash-modal-card">
+        <div class="modal-head dash-modal-head">
+            <div class="modal-title">Audit entry</div>
+            <button class="secondary dash-btn dash-btn--sm" type="button" id="closeAuditDetail">Close</button>
+        </div>
+        <pre id="auditDetailPre" class="dash-modal-pre">{}</pre>
+    </div>
+</div>
+
+<script src="/static/js/audit.js"></script>
+</body>
+</html>

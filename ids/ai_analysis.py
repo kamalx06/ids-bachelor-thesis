@@ -13,6 +13,7 @@ from typing import Any
 from ai.classifier import predict, model_is_trusted
 from engine.behavior import detect as detect_behavior
 from engine.payload_analyzer import analyze_payload
+from intelligence.mitre import classify as mitre_classify
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -374,6 +375,8 @@ def analyze_packet(
         attack_signals=attack_signals,
     )
 
+    mitre_techniques = mitre_classify(reasons)
+
     explanation = {
         "ml_score": round(ml_score, 4),
         "adjusted_score": round(adjusted, 4),
@@ -390,6 +393,7 @@ def analyze_packet(
             "dangerous": _DANGEROUS_THRESHOLD,
         },
         "reasons": reasons,
+        "mitre": mitre_techniques,
     }
 
     return {
@@ -403,6 +407,7 @@ def analyze_packet(
         "rf_prob": detail.get("rf_prob"),
         "anomaly_strength": detail.get("anomaly_strength"),
         "explanation": explanation,
+        "mitre": mitre_techniques,
         "ti_ip": ti_ip,
         "ti_url": ti_url,
         "zeek": zeek,

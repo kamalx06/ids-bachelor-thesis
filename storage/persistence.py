@@ -357,6 +357,7 @@ def _flush_packet_logs(entries: list[dict]) -> int:
                     dns_json=_json_dumps(log.get("dns")),
                     payload_preview=log.get("payload") or log.get("payload_preview"),
                     ai_explanation_json=_json_dumps(log.get("ai_explanation")),
+                    mitre_json=_json_dumps(log.get("mitre")),
                 )
             )
         session.add_all(rows)

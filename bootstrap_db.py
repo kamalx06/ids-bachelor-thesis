@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS packet_logs (
     dns_json LONGTEXT NULL,
     payload_preview TEXT NULL,
     ai_explanation_json LONGTEXT NULL,
+    mitre_json LONGTEXT NULL,
     INDEX ix_packet_logs_timestamp (timestamp),
     INDEX ix_packet_logs_ts_cls (timestamp, classification),
     INDEX ix_packet_logs_src_ts (src_ip, timestamp),
@@ -159,6 +160,23 @@ CREATE TABLE IF NOT EXISTS ssl_bypass_rules (
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     UNIQUE KEY uq_ssl_bypass (match_type, pattern),
     INDEX ix_ssl_bypass_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ts DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    actor_id INT NULL,
+    actor_username VARCHAR(64) NULL,
+    actor_ip VARCHAR(45) NULL,
+    action VARCHAR(64) NOT NULL,
+    target_type VARCHAR(32) NULL,
+    target_id VARCHAR(64) NULL,
+    outcome VARCHAR(16) NOT NULL DEFAULT 'success',
+    detail_json LONGTEXT NULL,
+    INDEX ix_audit_ts (ts),
+    INDEX ix_audit_actor (actor_id, ts),
+    INDEX ix_audit_action (action, ts),
+    INDEX ix_audit_target (target_type, target_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 

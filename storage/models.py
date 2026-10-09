@@ -141,6 +141,7 @@ class PacketLog(Base):
     dns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_explanation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mitre_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AiAnalysisHistory(Base):
@@ -269,3 +270,28 @@ class SslBypassRule(Base):
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+class AuditLog(Base):
+    """Immutable record of privileged actions (logins, admin ops, config changes)."""
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_ts", "ts"),
+        Index("ix_audit_actor", "actor_id", "ts"),
+        Index("ix_audit_action", "action", "ts"),
+        Index("ix_audit_target", "target_type", "target_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, default="success")
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)

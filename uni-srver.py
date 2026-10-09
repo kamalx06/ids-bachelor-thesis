@@ -37,6 +37,7 @@ from storage.analytics import (
     get_top_threats,
     get_weekly_summary,
 )
+from storage.audit import audit, cleanup_retention as audit_cleanup, distinct_actions as audit_actions, query_audit, stats_since as audit_stats
 from storage.persistence import (
     apply_telemetry_stats,
     init_persistence,
@@ -370,6 +371,10 @@ def start_retention_worker():
             if deleted:
                 import logging
                 logging.getLogger(__name__).info("Retention cleanup removed %d packet log rows", deleted)
+            audit_deleted = audit_cleanup()
+            if audit_deleted:
+                import logging
+                logging.getLogger(__name__).info("Retention cleanup removed %d audit rows", audit_deleted)
         except Exception:
             import logging
             logging.getLogger(__name__).error("Retention worker failed", exc_info=True)
@@ -504,6 +509,12 @@ def login():
     error_msg = "Invalid credentials"
     if not row:
         _equalize_auth_timing(password)
+        audit(
+            "login.failure",
+            outcome="failure",
+            actor_username=username or None,
+            detail={"reason": "unknown_user"},
+        )
         return render_login_error(error_msg, 401)
 
     user_id = row.id
@@ -537,6 +548,14 @@ def login():
     except VerifyMismatchError:
         failed_attempts += 1
 
+        audit(
+            "login.failure",
+            outcome="failure",
+            actor_id=user_id,
+            actor_username=username,
+            detail={"reason": "bad_password", "attempts": failed_attempts},
+        )
+
         if failed_attempts >= 5:
             lock_time = utcnow() + timedelta(minutes=15)
             s = get_session()
@@ -561,6 +580,13 @@ def login():
 
     def _otp_fail():
         _record_password_failure(user_id)
+        audit(
+            "login.failure",
+            outcome="failure",
+            actor_id=user_id,
+            actor_username=username,
+            detail={"reason": "bad_otp"},
+        )
         return render_login_error(error_msg, 401)
 
     try:
@@ -644,6 +670,15 @@ def login():
                     totp_secret=u.totp_secret,
                     totp_enabled=u.totp_enabled,
                 )
+            )
+            audit(
+                "login.success",
+                actor_id=u.id,
+                actor_username=u.username,
+                detail={
+                    "totp_enabled": bool(u.totp_enabled),
+                    "email_otp_enabled": bool(u.email_otp_enabled),
+                },
             )
     finally:
         s.close()
@@ -910,6 +945,7 @@ def disable_totp():
         user.totp_secret = None
         user.totp_qr_shown = False
         s.commit()
+        audit("mfa.totp.disable", actor_id=user.id, actor_username=user.username)
     finally:
         s.close()
 
@@ -951,6 +987,7 @@ def verify_new_totp():
         user.totp_enabled = True
         user.totp_qr_shown = True
         s.commit()
+        audit("mfa.totp.enable", actor_id=user.id, actor_username=user.username)
     finally:
         s.close()
 
@@ -1013,6 +1050,7 @@ def change_password():
 
         user.password_hash = ph.hash(new_password)
         s.commit()
+        audit("password.change", actor_id=user.id, actor_username=user.username)
     finally:
         s.close()
 
@@ -1156,6 +1194,16 @@ def update_profile():
         user.email = email
         user.avatar_path = avatar_path
         s.commit()
+        audit(
+            "profile.update",
+            actor_id=user.id,
+            actor_username=old_username,
+            detail={
+                "username_changed": username != old_username,
+                "email_changed": email != old_username,
+                "avatar_changed": avatar_path != old_avatar_path,
+            },
+        )
     finally:
         s.close()
 
@@ -1169,6 +1217,7 @@ def update_profile():
 @app.route("/logout")
 @login_required
 def logout():
+    audit("logout")
     logout_user()
     return redirect("/login")
 
@@ -1315,6 +1364,7 @@ def verify_email_otp():
         user.email_otp_code = None
         user.email_otp_code_expires = None
         s.commit()
+        audit("mfa.email.enable", actor_id=user.id, actor_username=user.username)
         return jsonify({"ok": True}), 200
     finally:
         s.close()
@@ -1372,6 +1422,7 @@ def disable_email_otp():
         user.email_otp_code = None
         user.email_otp_code_expires = None
         s.commit()
+        audit("mfa.email.disable", actor_id=user.id, actor_username=user.username)
         return jsonify({"ok": True}), 200
     finally:
         s.close()
@@ -1389,6 +1440,59 @@ def dashboard():
 @role_required("admin", "soc")
 def analytics_page():
     return render_template("analytics.html")
+
+@app.route("/audit")
+@login_required
+@role_required("admin")
+def audit_page():
+    return render_template("audit.html")
+
+
+@app.route("/audit/api/entries")
+@login_required
+@role_required("admin")
+def audit_api_entries():
+    try:
+        rows = query_audit(
+            action=(request.args.get("action") or "").strip() or None,
+            actor_username=(request.args.get("actor") or "").strip() or None,
+            target_type=(request.args.get("target_type") or "").strip() or None,
+            outcome=(request.args.get("outcome") or "").strip() or None,
+            start_time=request.args.get("start_time", type=float),
+            end_time=request.args.get("end_time", type=float),
+            before_ts=request.args.get("before_ts", type=float),
+            before_id=request.args.get("before_id", type=int),
+            limit=request.args.get("limit", default=100, type=int) or 100,
+        )
+        next_cursor = None
+        if rows:
+            last = rows[-1]
+            next_cursor = {"before_ts": last["ts"], "before_id": last["id"]}
+        return api_ok(rows, meta={"next_cursor": next_cursor})
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/audit/api/actions")
+@login_required
+@role_required("admin")
+def audit_api_actions():
+    try:
+        return api_ok(audit_actions())
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/audit/api/stats")
+@login_required
+@role_required("admin")
+def audit_api_stats():
+    days = request.args.get("days", default=7, type=int) or 7
+    try:
+        start_time = time.time() - days * 86400
+        return api_ok(audit_stats(start_time=start_time))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
 
 @app.route("/admin")
 @login_required
@@ -1514,6 +1618,12 @@ def admin_create_user():
         )
         s.add(user)
         s.commit()
+        audit(
+            "user.create",
+            target_type="user",
+            target_id=user.id,
+            detail={"username": username, "role": role, "email": email},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1531,8 +1641,15 @@ def admin_delete_user(user_id: int):
         user = s.get(DbUser, int(user_id))
         if not user:
             return jsonify({"ok": False, "error": "User not found"}), 404
+        target_username = user.username
         s.delete(user)
         s.commit()
+        audit(
+            "user.delete",
+            target_type="user",
+            target_id=user_id,
+            detail={"username": target_username},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1557,6 +1674,12 @@ def admin_reset_password(user_id: int):
         user.failed_attempts = 0
         user.locked_until = None
         s.commit()
+        audit(
+            "user.reset_password",
+            target_type="user",
+            target_id=user_id,
+            detail={"username": user.username},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1579,8 +1702,15 @@ def admin_set_role(user_id: int):
         user = s.get(DbUser, int(user_id))
         if not user:
             return jsonify({"ok": False, "error": "User not found"}), 404
+        old_role = user.role
         user.role = role
         s.commit()
+        audit(
+            "user.set_role",
+            target_type="user",
+            target_id=user_id,
+            detail={"username": user.username, "old_role": old_role, "new_role": role},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1612,6 +1742,12 @@ def admin_reset_mfa(user_id: int):
         user.failed_attempts = 0
         user.locked_until = None
         s.commit()
+        audit(
+            "user.reset_mfa",
+            target_type="user",
+            target_id=user_id,
+            detail={"username": user.username},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1642,6 +1778,12 @@ def admin_set_lock(user_id: int):
             user.failed_attempts = 0
 
         s.commit()
+        audit(
+            "user.lock" if locked else "user.unlock",
+            target_type="user",
+            target_id=user_id,
+            detail={"username": user.username},
+        )
         return jsonify({"ok": True})
     finally:
         s.close()
@@ -1749,6 +1891,75 @@ def analytics_api_weekly_summary():
     except Exception as e:
         return api_error(str(e), status_code=500, code="internal_error")
 
+@app.route("/analytics/api/mitre-coverage")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_mitre_coverage():
+    """
+    Coverage matrix: for each tactic, which techniques fired in the
+    window and how often. Uses the analytics `threat_patterns` table
+    for counts, augmented with the static mapping.
+    """
+    from intelligence.mitre import TACTICS, coverage as mitre_coverage
+    from sqlalchemy import func, select
+    from storage.db import get_session
+    from storage.models import PacketLog
+
+    days = request.args.get("days", default=30, type=int) or 30
+    since = time.time() - days * 86400
+
+    session = get_session()
+    try:
+        # Packet_logs is the source of truth for mitre_json; the aggregation
+        # table doesn't split by technique. This is a per-request scan of
+        # suspicious/dangerous rows, bounded by the lookback window.
+        rows = session.execute(
+            select(PacketLog.mitre_json)
+            .where(PacketLog.timestamp >= since)
+            .where(PacketLog.mitre_json.isnot(None))
+            .where(PacketLog.classification.in_(("suspicious", "dangerous")))
+        ).all()
+    finally:
+        session.close()
+
+    counts: dict[str, int] = {}
+    for (raw,) in rows:
+        try:
+            entries = json.loads(raw or "[]")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(entries, list):
+            continue
+        for e in entries:
+            if isinstance(e, dict) and e.get("technique"):
+                counts[e["technique"]] = counts.get(e["technique"], 0) + 1
+
+    mapping = {e["technique"]: e for e in mitre_coverage()}
+
+    by_tactic: dict[str, list[dict]] = {t: [] for t in TACTICS}
+    for tech, entry in mapping.items():
+        tactic = entry["tactic"]
+        by_tactic.setdefault(tactic, []).append({
+            "technique": tech,
+            "name": entry["name"],
+            "count": counts.get(tech, 0),
+        })
+
+    for t in by_tactic:
+        by_tactic[t].sort(key=lambda e: (-e["count"], e["technique"]))
+
+    total_techniques = len(mapping)
+    triggered_techniques = sum(1 for tech in mapping if counts.get(tech, 0) > 0)
+
+    return api_ok({
+        "days": days,
+        "tactics": TACTICS,
+        "by_tactic": by_tactic,
+        "total_techniques": total_techniques,
+        "triggered_techniques": triggered_techniques,
+        "triggered_counts": counts,
+    })
+
 # --- SSL decryption management ---
 
 def _ssl_enabled() -> bool:
@@ -1834,12 +2045,18 @@ def ssl_api_ca_regenerate():
     try:
         ca_module.delete_ca()
         cert = ca_module.generate_ca()
+        audit(
+            "ssl.ca_regenerate",
+            target_type="ca",
+            detail={"common_name": cert.subject.rfc4514_string()},
+        )
         return api_ok({
             "regenerated": True,
             "common_name": cert.subject.rfc4514_string(),
             "message": "Restart the supervisor for the new CA to take effect.",
         })
     except Exception as e:
+        audit("ssl.ca_regenerate", outcome="failure", detail={"error": str(e)})
         return api_error(str(e), status_code=500, code="ca_regen_failed")
 
 
@@ -1907,10 +2124,17 @@ def ssl_api_bypass_add():
         if existing:
             return api_error("Rule already exists", status_code=400, code="duplicate")
 
-        session.add(SslBypassRule(
+        rule = SslBypassRule(
             match_type=match_type, pattern=pattern, reason=reason, enabled=True,
-        ))
+        )
+        session.add(rule)
         session.commit()
+        audit(
+            "ssl.bypass.add",
+            target_type="bypass_rule",
+            target_id=rule.id,
+            detail={"match_type": match_type, "pattern": pattern, "reason": reason},
+        )
         return api_ok({"added": True})
     finally:
         session.close()
@@ -1929,8 +2153,15 @@ def ssl_api_bypass_delete(rule_id: int):
         row = session.get(SslBypassRule, rule_id)
         if not row:
             return api_error("Rule not found", status_code=404, code="not_found")
+        detail = {"match_type": row.match_type, "pattern": row.pattern}
         session.delete(row)
         session.commit()
+        audit(
+            "ssl.bypass.delete",
+            target_type="bypass_rule",
+            target_id=rule_id,
+            detail=detail,
+        )
         return api_ok({"deleted": True})
     finally:
         session.close()
@@ -2026,6 +2257,17 @@ def _safe_json_reasons(raw: str | None) -> list:
         return []
     return [str(data)]
 
+def _safe_json_mitre(raw: str | None) -> list:
+    """Parse mitre_json into a list of {technique, tactic, name} entries."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict) and x.get("technique")]
 
 def _safe_json_object(raw: str | None) -> dict | None:
     """Parse TI / DNS JSON without dropping rows on malformed payloads."""
@@ -2066,6 +2308,7 @@ def _format_packet_log_row(r: dict) -> dict:
         "ti_ip": _safe_json_object(r.get("ti_ip_json")),
         "ti_url": _safe_json_object(r.get("ti_url_json")),
         "dns": _safe_json_object(r.get("dns_json")),
+        "mitre": _safe_json_mitre(r.get("mitre_json")),
     }
 
 

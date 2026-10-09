@@ -150,6 +150,7 @@ def _process_packet(packet_dict: dict) -> None:
         "ti_url": ti_url,
         "dns": data.get("dns"),
         "ai_explanation": result.get("explanation"),
+        "mitre": result.get("mitre"),
     }
     for k in ("packet_send_time", "event_origin_time", "device_timestamp"):
         v = packet_dict.get(k)

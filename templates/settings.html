@@ -30,12 +30,11 @@
         <a href="/dashboard" class="dash-nav-link">Monitoring</a>
         <a href="/analytics" class="dash-nav-link">Analytics</a>
         {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
-        <a href="/ssl" class="dash-nav-link">SSL</a>
-        {% endif %}
-        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
         <a href="/admin" class="dash-nav-link">Admin</a>
+        <a href="/ssl" class="dash-nav-link">SSL</a>
+        <a href="/audit" class="dash-nav-link">Audit</a>
         {% endif %}
-        <a href="/settings" class="dash-nav-link is-active">Settings</a>
+        <a href="/settings" class="dash-nav-link">Settings</a>
         <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
     </nav>
 </header>
