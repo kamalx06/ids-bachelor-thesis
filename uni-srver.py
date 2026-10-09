@@ -2165,9 +2165,22 @@ def ssl_api_bypass_add():
             target_id=rule.id,
             detail={"match_type": match_type, "pattern": pattern, "reason": reason},
         )
-        return api_ok({"added": True})
     finally:
         session.close()
+
+    # Best-effort immediate sync; the interceptor's background loop
+    # picks up the change within ~30 s if this is not root.
+    try:
+        from ssl_inspect import bypass as bypass_module
+        bypass_module.sync_iptables()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "immediate iptables sync failed; interceptor will catch up",
+            exc_info=True,
+        )
+
+    return api_ok({"added": True})
 
 
 @app.route("/ssl/api/bypass/<int:rule_id>", methods=["DELETE"])
@@ -2177,6 +2190,7 @@ def ssl_api_bypass_add():
 def ssl_api_bypass_delete(rule_id: int):
     from storage.db import get_session
     from storage.models import SslBypassRule
+    from ssl_inspect import bypass as bypass_module
 
     session = get_session()
     try:
@@ -2192,9 +2206,37 @@ def ssl_api_bypass_delete(rule_id: int):
             target_id=rule_id,
             detail=detail,
         )
-        return api_ok({"deleted": True})
     finally:
         session.close()
+
+    # Best-effort immediate sync. Works only when the web UI runs as root
+    # (which it does under main.py). If not root, the interceptor's
+    # background sync thread will pick up the change within ~30 seconds.
+    try:
+        bypass_module.sync_iptables()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "immediate iptables sync failed; interceptor will catch up",
+            exc_info=True,
+        )
+
+    return api_ok({"deleted": True})
+
+
+@app.route("/ssl/api/bypass/iptables-status")
+@login_required
+@role_required("admin")
+def ssl_api_bypass_iptables_status():
+    """
+    Read-only view of the current iptables bypass state. Used by the SSL
+    page to indicate whether the DB rules are actually enforced.
+    """
+    try:
+        from ssl_inspect import bypass as bypass_module
+        return api_ok(bypass_module.iptables_status())
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
 
 # --- IDS engine health (dashboard live indicator) ---
 @app.route("/ids/health")

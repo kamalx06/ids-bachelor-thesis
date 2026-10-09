@@ -147,12 +147,6 @@ setup(
     install_requires=requirements,
     extras_require={
         "dev": ["pytest"],
-        # Optional: TLS interception via mitmproxy. Not installed by default
-        # because it's only needed when SSL_DECRYPTION_ENABLED=true, and it
-        # pulls in a large dependency tree (mitmproxy, pyOpenSSL, msgpack,
-        # protobuf, ...). Install with:
-        #     pip install -e ".[ssl]"
-        "ssl": ["mitmproxy>=10.0"],
     },
     entry_points={
         "console_scripts": [

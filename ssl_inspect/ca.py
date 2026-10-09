@@ -1,11 +1,16 @@
 """
 Root CA generation and metadata management.
 
-The CA private key is written to ssl_inspect/mitm-conf/mitmproxy-ca.pem
-— the file mitmproxy natively reads. The private key is never persisted
-in MySQL; the database holds only public metadata (common name, serial,
-validity window, SHA-256 fingerprint) for display in the web UI. A
-database dump alone therefore cannot be used to forge certificates.
+The combined CA (cert + key) is written to ssl_inspect/conf/ids-ca.pem.
+The public cert (for client installation) is written to
+ssl_inspect/conf/ids-ca-cert.pem. The TLS interceptor (sslsplit) is given
+separate cert and key files, produced from the combined PEM by
+export_for_sslsplit().
+
+The private key is never persisted in MySQL; the database holds only
+public metadata (common name, serial, validity window, SHA-256
+fingerprint) for display in the web UI. A database dump alone therefore
+cannot be used to forge certificates.
 """
 
 from __future__ import annotations
@@ -24,9 +29,18 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONF_DIR = REPO_ROOT / "ssl_inspect" / "mitm-conf"
-CA_COMBINED_PATH = CONF_DIR / "mitmproxy-ca.pem"        # key + cert, mitmproxy reads this
-CA_CERT_PATH = CONF_DIR / "mitmproxy-ca-cert.pem"        # public cert, for client install
+CONF_DIR = REPO_ROOT / "ssl_inspect" / "conf"
+
+# Combined cert + key (PEM bundle). Kept as a single file so the CA can be
+# distributed as one artifact if needed; the split form is derived from it.
+CA_COMBINED_PATH = CONF_DIR / "ids-ca.pem"
+
+# Public cert, served to clients through /ssl/api/ca/cert.pem.
+CA_CERT_PATH = CONF_DIR / "ids-ca-cert.pem"
+
+# Split cert/key for sslsplit (-c / -k). Written by export_for_sslsplit().
+SSLSplit_CERT_PATH = CONF_DIR / "sslsplit-ca.crt"
+SSLSplit_KEY_PATH = CONF_DIR / "sslsplit-ca.key"
 
 DEFAULT_CN = "Enterprise AI IDS Root CA"
 DEFAULT_VALIDITY_DAYS = 3650
@@ -53,7 +67,7 @@ def generate_ca(
     common_name: str = DEFAULT_CN,
     validity_days: int = DEFAULT_VALIDITY_DAYS,
 ) -> x509.Certificate:
-    """Generate a fresh root CA and write it to the mitmproxy conf dir."""
+    """Generate a fresh root CA and write it to the CA config directory."""
     logger.warning("Generating new root CA: CN=%s", common_name)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
@@ -148,10 +162,53 @@ def read_ca_cert_pem() -> bytes:
 
 
 def delete_ca() -> None:
-    """Wipe the CA from disk. mitmproxy will regenerate on next start."""
-    for p in (CA_COMBINED_PATH, CA_CERT_PATH):
+    """Wipe the CA from disk. It will be regenerated on next start."""
+    for p in (CA_COMBINED_PATH, CA_CERT_PATH, SSLSplit_CERT_PATH, SSLSplit_KEY_PATH):
         try:
             if p.is_file():
                 p.unlink()
         except OSError:
             pass
+
+
+def export_for_sslsplit() -> tuple[Path, Path]:
+    """
+    Split the combined PEM into separate cert and key files, which is
+    what sslsplit expects (-c <cert> -k <key>). Called automatically by
+    ssl_inspect/engine.py before sslsplit is spawned.
+
+    Returns (cert_path, key_path).
+    """
+    if not ca_exists():
+        generate_ca()
+
+    combined = CA_COMBINED_PATH.read_text(encoding="utf-8")
+
+    import re as _re
+    cert_match = _re.search(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        combined, _re.DOTALL,
+    )
+    key_match = _re.search(
+        r"-----BEGIN (?:RSA )?PRIVATE KEY-----.*?-----END (?:RSA )?PRIVATE KEY-----",
+        combined, _re.DOTALL,
+    )
+    if not cert_match or not key_match:
+        raise RuntimeError(
+            "Combined PEM does not contain both a certificate and a private key"
+        )
+
+    SSLSplit_CERT_PATH.write_text(cert_match.group(0) + "\n", encoding="utf-8")
+    SSLSplit_KEY_PATH.write_text(key_match.group(0) + "\n", encoding="utf-8")
+
+    try:
+        SSLSplit_KEY_PATH.chmod(0o600)
+        SSLSplit_CERT_PATH.chmod(0o644)
+    except OSError:
+        pass
+
+    logger.info(
+        "Exported sslsplit CA files: %s, %s",
+        SSLSplit_CERT_PATH, SSLSplit_KEY_PATH,
+    )
+    return SSLSplit_CERT_PATH, SSLSplit_KEY_PATH

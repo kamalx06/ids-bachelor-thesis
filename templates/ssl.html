@@ -44,6 +44,14 @@
         illegal in your jurisdiction.
     </div>
 
+    <div class="alert info" style="margin-bottom: 20px;">
+        <strong>Prerequisite:</strong> TLS interception requires
+        <code>sslsplit</code>. Install it with
+        <code>sudo dnf install sslsplit -y</code> (Fedora/RHEL) or
+        <code>sudo apt install sslsplit</code> (Debian/Ubuntu) before enabling
+        the feature.
+    </div>
+
     <div id="sslAlert" class="" aria-live="polite"></div>
 
     <section class="card dash-logs-panel" style="margin-bottom: 24px;">
@@ -101,34 +109,159 @@
     <section class="card dash-logs-panel" style="margin-bottom: 24px;">
         <div class="dash-section-head">
             <h2>Client trust installation</h2>
-            <p class="dash-section-desc">Install the downloaded CA on each client to avoid certificate warnings.</p>
+            <p class="dash-section-desc">
+                Download the root CA from the button above, then install it on every client
+                that should be inspected. Without this step, browsers and applications will
+                show certificate warnings on every HTTPS site. Pick the section that matches
+                the client operating system.
+            </p>
         </div>
-        <pre style="background:#060a14; padding:16px; border-radius:10px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#cbd5e1; overflow:auto;"># Linux (Debian/Ubuntu)
-sudo cp enterprise-ai-ids-ca.crt /usr/local/share/ca-certificates/
+
+        <div class="ssl-guide-actions" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;">
+            <a class="primary dash-btn" href="/ssl/api/ca/cert.pem" download>
+                <span aria-hidden="true">↓</span> Download CA (PEM)
+            </a>
+            <button class="secondary dash-btn" id="copyFingerprintBtn" type="button">
+                Copy SHA-256 fingerprint
+            </button>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Linux — Debian / Ubuntu</h3>
+            <pre># Copy the CA into the system trust store
+sudo cp enterprise-ai-ids-ca.crt /usr/local/share/ca-certificates/enterprise-ai-ids-ca.crt
+
+# Refresh the trust store
 sudo update-ca-certificates
 
-# Linux (Fedora/RHEL)
+# Verify (should print the CA subject)
+awk -v cmd='openssl x509 -noout -subject' \
+  '/BEGIN/{close(cmd)};{print | cmd}' \
+  &lt; /etc/ssl/certs/ca-certificates.crt | grep "Enterprise AI IDS"</pre>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Linux — Fedora / RHEL / CentOS</h3>
+            <pre># Copy the CA into the anchors directory
 sudo cp enterprise-ai-ids-ca.crt /etc/pki/ca-trust/source/anchors/
+
+# Refresh the trust store
 sudo update-ca-trust
 
-# Firefox
-about:config → security.enterprise_roots.enabled = true
-# then import the CA from about:preferences#privacy
+# Verify
+trust list | grep -A2 "Enterprise AI IDS"</pre>
+        </div>
 
-# macOS
-# Keychain Access → System → import → set to "Always Trust"</pre>
+        <div class="ssl-guide-os">
+            <h3>Linux — Arch</h3>
+            <pre>sudo cp enterprise-ai-ids-ca.crt /etc/ca-certificates/trust-source/anchors/
+sudo trust extract-compat</pre>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>macOS</h3>
+            <pre># Add the CA to the System keychain
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain \
+  enterprise-ai-ids-ca.crt
+
+# Verify
+security find-certificate -c "Enterprise AI IDS" \
+  /Library/Keychains/System.keychain</pre>
+            <p class="small" style="margin: 6px 0 0;">
+                GUI alternative: open the .crt file with <strong>Keychain Access</strong>,
+                add it to the <em>System</em> keychain, then double-click the entry and set
+                <em>When using this certificate</em> to <strong>Always Trust</strong>.
+                Administrator credentials will be required.
+            </p>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Windows (10 / 11 / Server)</h3>
+            <pre># Run in an elevated PowerShell or cmd.exe
+
+:: Import into the Local Machine Root store
+certutil -addstore -f "ROOT" enterprise-ai-ids-ca.crt
+
+:: Verify
+certutil -store "ROOT" | findstr /I "Enterprise AI IDS"</pre>
+            <p class="small" style="margin: 6px 0 0;">
+                GUI alternative: double-click the .crt file → <strong>Install Certificate</strong>
+                → <strong>Local Machine</strong> → <strong>Place all certificates in the following
+                store</strong> → <strong>Trusted Root Certification Authorities</strong>.
+            </p>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Firefox (all platforms)</h3>
+            <p class="small" style="margin: 0 0 8px;">
+                Firefox uses its own certificate store and does not automatically trust
+                the system store on Linux. Do one of the following.
+            </p>
+            <pre># Option 1 — trust the system store (simplest, works after any OS-level install)
+1. Open about:config
+2. Set security.enterprise_roots.enabled = true
+3. Restart Firefox
+
+# Option 2 — import the CA directly
+1. Open about:preferences#privacy
+2. Scroll to "Certificates" → click "View Certificates"
+3. Go to the "Authorities" tab → click "Import…"
+4. Select enterprise-ai-ids-ca.crt
+5. Check "Trust this CA to identify websites" → OK</pre>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Chrome / Edge / Safari</h3>
+            <p class="small" style="margin: 0;">
+                Chrome and Edge on Windows and macOS use the operating system trust store,
+                so the OS-level steps above cover them. Safari uses the macOS keychain.
+                On Linux, Chrome uses the NSS store — run <code>certutil</code> against the
+                NSS database if the system-wide install does not take effect:
+            </p>
+            <pre># Install libnss3-tools first (Debian/Ubuntu: nss-tools)
+certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "Enterprise AI IDS" \
+  -i enterprise-ai-ids-ca.crt</pre>
+        </div>
+
+        <div class="ssl-note" style="margin-top: 20px;">
+            <strong>Verification checklist.</strong> After installing the CA on a client,
+            open any HTTPS site (for example <code>https://example.com</code>):
+            <ul style="margin: 8px 0 0; padding-left: 20px;">
+                <li><strong>No certificate warning.</strong> The padlock shows normally.</li>
+                <li><strong>Issuer shows "Enterprise AI IDS Root CA".</strong>
+                    Click the padlock → Certificate → check the issuer.</li>
+                <li><strong>The connection appears in the IDS.</strong>
+                    Open <code>/dashboard</code> → log search, and look for a row
+                    with <code>decrypted=true</code> and <code>ml_skipped_no_features</code>
+                    in the reasons column.</li>
+            </ul>
+            <p style="margin: 8px 0 0;">
+                If the padlock shows but the connection does not appear in the dashboard,
+                TLS interception is not actually happening — the traffic is bypassing
+                the redirect. Check the iptables rules with
+                <code>sudo python -m ssl_inspect.iptables status</code> and confirm that
+                the client is not excluded by a RETURN rule.
+            </p>
+        </div>
     </section>
 
     <section class="card dash-logs-panel" style="margin-bottom: 24px;">
         <div class="dash-section-head">
             <h2>Enable interception</h2>
-            <p class="dash-section-desc">These commands redirect TCP/443 into the interceptor. Run as root.</p>
+            <p class="dash-section-desc">
+                These commands redirect TCP/443 into the sslsplit interceptor. Run as root.
+                The install command is idempotent.
+            </p>
         </div>
         <pre style="background:#060a14; padding:16px; border-radius:10px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#cbd5e1; overflow:auto;"># Redirect 443 → interceptor
 sudo python -m ssl_inspect.iptables install
 
 # Exclude the IDS host itself (adjust IP)
 sudo iptables -t nat -I PREROUTING 1 -s &lt;IDS_HOST_IP&gt; -j RETURN
+
+# Check current state
+sudo python -m ssl_inspect.iptables status
 
 # When done
 sudo python -m ssl_inspect.iptables remove</pre>
@@ -137,7 +270,12 @@ sudo python -m ssl_inspect.iptables remove</pre>
     <section class="card dash-logs-panel">
         <div class="dash-section-head">
             <h2>Bypass rules</h2>
-            <p class="dash-section-desc">SNI patterns and IPs that skip TLS interception. Add certificate-pinned services here.</p>
+            <p class="dash-section-desc">
+                SNI patterns that skip TLS interception. Because sslsplit does not
+                terminate bypassed traffic, the rules are enforced at the iptables
+                layer — see the sync status below the table.
+            </p>
+            <div id="bypassSyncStatus" class="ssl-bypass-sync" style="margin-top: 10px; font-size: 0.8125rem;"></div>
         </div>
         <div class="field-group dash-filter-grid" style="margin-bottom: 12px;">
             <div class="field field--narrow">
@@ -177,6 +315,17 @@ sudo python -m ssl_inspect.iptables remove</pre>
                 </tbody>
             </table>
         </div>
+
+        <p class="small" style="margin-top: 12px; color: #94a3b8;">
+            <strong>How bypass works:</strong> the rules above are enforced at the
+            iptables layer. Each enabled SNI pattern becomes a
+            <code>-m string</code> match on the first packet of each connection; if it
+            matches, the connection bypasses the redirect to sslsplit and reaches the
+            real server directly. This means SNI bypass works even for
+            certificate-pinned services, at the cost of the interception no longer
+            seeing those connections. IP and CIDR rules apply the same logic but match
+            on the source address instead of the ClientHello.
+        </p>
     </section>
 </main>
 

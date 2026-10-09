@@ -34,6 +34,38 @@ function fmtDate(v) {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
+async function refreshBypassSyncStatus() {
+  const host = el("bypassSyncStatus");
+  if (!host) return;
+  try {
+    const st = await api("/ssl/api/bypass/iptables-status");
+    host.innerHTML = "";
+    if (!st.root) {
+      host.textContent =
+        "Firewall sync: unavailable (the web process is not running as root). " +
+        "The interceptor process will apply changes independently.";
+      host.style.color = "#fcd34d";
+      return;
+    }
+    const missing = st.missing || [];
+    const stale = st.stale || [];
+    if (missing.length === 0 && stale.length === 0) {
+      host.textContent =
+        `Firewall sync: OK — ${st.have.length} SNI rule(s) enforced at the iptables layer.`;
+      host.style.color = "#a7f3d0";
+    } else {
+      const parts = [];
+      if (missing.length) parts.push(`${missing.length} not yet installed (${missing.join(", ")})`);
+      if (stale.length) parts.push(`${stale.length} stale in firewall (${stale.join(", ")})`);
+      host.textContent = "Firewall sync: " + parts.join("; ") + ".";
+      host.style.color = "#fcd34d";
+    }
+  } catch (e) {
+    host.textContent = "Firewall sync: unable to read status.";
+    host.style.color = "#fca5a5";
+  }
+}
+
 async function loadStatus() {
   const s = await api("/ssl/api/status");
   el("sslEnabled").textContent = s.enabled ? "ENABLED" : "DISABLED";
@@ -81,6 +113,7 @@ async function loadBypass() {
       try {
         await api(`/ssl/api/bypass/${r.id}`, { method: "DELETE" });
         await loadBypass();
+        await refreshBypassSyncStatus();
         showAlert("Rule deleted.", "success");
       } catch (e) { showAlert(e.message, "error"); }
     });
@@ -100,6 +133,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (e) { showAlert(e.message, "error"); }
   });
 
+  el("copyFingerprintBtn")?.addEventListener("click", async () => {
+    const fp = (el("caFingerprint")?.textContent || "").trim();
+    if (!fp || fp === "—") {
+      showAlert("Fingerprint not available yet. Load the CA metadata first.", "error");
+      return;
+    }
+
+    // Prefer the modern async clipboard API; fall back to a hidden
+    // textarea + execCommand for non-secure contexts (older browsers,
+    // plain http://localhost during development).
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(fp);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = fp;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      showAlert("SHA-256 fingerprint copied to clipboard.", "success");
+    } catch (e) {
+      showAlert("Could not copy — select the fingerprint manually from the table.", "error");
+    }
+  });
+
   el("addBypassBtn")?.addEventListener("click", async () => {
     const match_type = el("bpType").value;
     const pattern = el("bpPattern").value.trim();
@@ -110,13 +172,21 @@ document.addEventListener("DOMContentLoaded", async () => {
       el("bpPattern").value = "";
       el("bpReason").value = "";
       await loadBypass();
-      showAlert("Rule added.", "success");
-    } catch (e) { showAlert(e.message, "error"); }
+      await refreshBypassSyncStatus();
+      showAlert(`Rule added for ${pattern}.`, "success");
+    } catch (e) {
+      showAlert(e.message, "error");
+    }
   });
 
   try {
     await Promise.all([loadStatus(), loadCa(), loadBypass()]);
+    await refreshBypassSyncStatus();
   } catch (e) {
     showAlert(e.message || "Failed to load SSL page.", "error");
   }
+
+  // Re-check the sync state periodically so the page stays honest about
+  // whether the firewall has caught up with the DB.
+  setInterval(refreshBypassSyncStatus, 15000);
 });

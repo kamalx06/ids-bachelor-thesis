@@ -1406,3 +1406,53 @@ header h1 {
     background: rgba(239, 68, 68, 0.12);
     border-color: rgba(239, 68, 68, 0.4);
 }
+
+/* --- SSL page — trust installation guide --- */
+
+.dashboard-page .ssl-guide-os {
+    margin-bottom: 18px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--dash-border);
+    background: rgba(6, 10, 20, 0.4);
+}
+
+.dashboard-page .ssl-guide-os h3 {
+    margin: 0 0 10px;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--dash-text);
+}
+
+.dashboard-page .ssl-guide-os pre {
+    margin: 0;
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: #060a14;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    color: #cbd5e1;
+    overflow: auto;
+    white-space: pre;
+}
+
+.dashboard-page .ssl-guide-os .small {
+    color: var(--dash-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+.dashboard-page .ssl-guide-os code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.12);
+    color: #e2e8f0;
+}
+
+.dashboard-page .ssl-guide-actions {
+    border-bottom: 1px solid var(--dash-border);
+    padding-bottom: 16px;
+}

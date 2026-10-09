@@ -1,6 +1,6 @@
 # Enterprise AI IDS
 
-An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, threat analytics with recurring-pattern detection, an immutable audit trail, HMAC-signed sensor telemetry, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
+An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception (via sslsplit), threat analytics with recurring-pattern detection, an immutable audit trail, HMAC-signed sensor telemetry, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-lightgrey)](#license)
@@ -41,7 +41,7 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - **MITRE ATT&CK mapping** — Every detection is tagged with one or more ATT&CK technique IDs, and the analytics page shows a per-tactic coverage matrix.
 - **Threat intelligence** — AbuseIPDB, VirusTotal, ip-api metadata, and a local IP blocklist (`config/blocklist_ips.txt`) with a MySQL-backed TTL cache.
 - **Zeek correlation** *(optional)* — Enrichment from Zeek `conn.log`, `notice.log`, and `weird.log` with rotation-tolerant tail reads.
-- **TLS interception** *(optional)* — NGFW-style HTTPS decryption via mitmproxy, with a web-UI-managed root CA, per-SNI bypass rules, and full reuse of the existing analysis pipeline on decrypted payloads.
+- **TLS interception** *(optional)* — NGFW-style HTTPS decryption via sslsplit, with a web-UI-managed root CA, iptables-enforced SNI bypass for certificate-pinned services, and full reuse of the existing analysis pipeline on decrypted payloads.
 - **Threat analytics** — Aggregated views of recurring attackers, periodic attack patterns, and day-of-week × hour-of-day heatmaps, backed by an hourly aggregation worker.
 - **Audit log** — Immutable trail of every privileged action (logins, MFA changes, user administration, SSL management, configuration changes), queryable from an admin-only page.
 - **Web dashboard** — Live statistics, log search with advanced filters, traffic charts, and Server-Sent Events (SSE) updates.
@@ -93,7 +93,7 @@ flowchart TB
 | `main.py` | Bootstraps the database and supervises all child processes |
 | `ids_engine.py` | Packet capture, AI analysis, MITRE mapping, persistence, telemetry sender |
 | `uni-srver.py` | Flask web UI, authentication, dashboard APIs, audit API |
-| `ssl_inspect/` | Optional TLS interception engine (mitmproxy addon + CA management) |
+| `ssl_inspect/` | Optional TLS interception engine (sslsplit launcher + CA management + log reader) |
 | `ai/` | ML training, inference, and model retraining |
 | `engine/` | Sniffer, flow manager, HTTP/DNS/payload parsers |
 | `ids/` | Packet queues, workers, metrics, AI analysis orchestration |
@@ -120,16 +120,16 @@ cp env-example .env
 $EDITOR .env                # set FLASK_SECRET, MYSQL_*, IDS_SENSOR_TOKEN
 
 # 3. Prepare the CIC IDS dataset (see Installation §6 for details)
-python merge_cic_ids.py
+python3.13 merge_cic_ids.py
 
 # 4. Train the initial models
-python ai/train_ids_models.py
+python3.13 ai/train_ids_models.py
 
 # 5. Bootstrap the database
-python bootstrap_db.py
+python3.13 bootstrap_db.py
 
 # 6. Run
-sudo python main.py         # or: sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3.13))
+sudo python3.13 main.py     # or: sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3.13))
 ```
 
 Open the dashboard at **https://localhost:5000**.
@@ -139,8 +139,9 @@ Open the dashboard at **https://localhost:5000**.
 ### Optional extras
 
 ```bash
-# TLS interception support (adds mitmproxy)
-pip install -e ".[ssl]"
+# TLS interception support (system package — not a Python dependency)
+sudo dnf install sslsplit -y     # Fedora / RHEL
+sudo apt install sslsplit        # Debian / Ubuntu
 
 # Development tools
 pip install -e ".[dev]"
@@ -227,13 +228,14 @@ Optional throughput tuning. Copy values into `.env` or edit `config/ids-performa
 
 ### TLS Interception *(optional)*
 
-Requires the `ssl` extra: `pip install -e ".[ssl]"`.
+Requires sslsplit: `sudo dnf install sslsplit -y` (Fedora / RHEL) or `sudo apt install sslsplit` (Debian / Ubuntu). It is a system binary, not a Python dependency.
 
 | Variable | Description |
 |----------|-------------|
 | `SSL_DECRYPTION_ENABLED` | `true` to start the TLS interceptor alongside the IDS engine (default: `false`) |
 | `SSL_INTERCEPT_PORT` | TCP port the interceptor listens on (default: `8443`) |
 | `SSL_INTERCEPT_HOST` | Bind address (default: `0.0.0.0`) |
+| `SSL_BYPASS_SYNC_SEC` | How often the interceptor reconciles the iptables SNI bypass rules with the database (default: `30`) |
 
 ### Audit & Retention
 
@@ -297,26 +299,28 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 ## TLS Interception (SSL Decryption)
 
 Optional NGFW-style HTTPS decryption. When enabled, TCP/443 traffic is
-redirected into a mitmproxy process that terminates TLS, extracts the
-plaintext HTTP request, and feeds it through the **same** `analyze_packet()`
-pipeline the Scapy sensor uses. Decrypted payloads go through the payload
-analyzer, HTTP content checks, and threat-intel lookups; ML classification
-is skipped because mitmproxy does not expose the flow-level features the
-RandomForest was trained on.
+redirected into an sslsplit process that terminates TLS, writes the
+decrypted connection metadata to a log file, and a background reader
+(`ssl_inspect/sslsplit_reader.py`) feeds that metadata through the **same**
+`analyze_packet()` pipeline the Scapy sensor uses. Decrypted payloads go
+through the payload analyzer, HTTP content checks, and threat-intel
+lookups; ML classification is skipped because sslsplit does not expose
+the flow-level features the RandomForest was trained on.
 
 ### How it works
 
 1. Enable the feature and install the root CA on the clients you want to inspect.
 2. `iptables` redirects inbound TCP/443 into the interceptor (port `8443` by default).
-3. mitmproxy presents a per-SNI leaf certificate signed by your root CA.
+3. sslsplit presents a per-SNI leaf certificate signed by your root CA.
 4. The decrypted request is converted into a packet-shaped dict and passed to `analyze_packet()`.
 5. Results are persisted exactly like live sensor events — visible in `/ids/logs`, on the dashboard, and in the analytics aggregation.
 
 ### Enabling it
 
 ```bash
-# 1. Install the mitmproxy dependency
-pip install -e ".[ssl]"
+# 1. Install sslsplit
+sudo dnf install sslsplit -y     # Fedora / RHEL
+sudo apt install sslsplit        # Debian / Ubuntu
 
 # 2. Add the new tables and seed bypass rules
 python bootstrap_db.py
@@ -352,14 +356,35 @@ Bypass matching:
 - `ip` — exact IP match
 - `cidr` — network, e.g. `10.0.0.0/8`
 
+> **How bypass is enforced.** sslsplit does not expose an SNI-level
+> bypass hook, so SNI bypass is implemented at the iptables layer. Each
+> enabled SNI pattern becomes a `-m string` match on the first packet of
+> every new TCP/443 connection; if it matches, the connection issues
+> `RETURN` and skips the redirect to sslsplit entirely. The interceptor
+> process reconciles the firewall state with the database every 30
+> seconds, and the web UI triggers an immediate reconciliation on every
+> rule change. The `/ssl` page shows a live indicator of whether the
+> database rules are actually installed in iptables.
+>
+> The first-packet property matters: NAT `PREROUTING` is only consulted
+> for the initial packet of a connection, so a `RETURN` on the
+> ClientHello bypasses the whole flow. IP and CIDR rules use the same
+> mechanism but match on the source address instead of the SNI bytes.
+>
+> The trade-off versus mitmproxy-style in-process bypass: the firewall
+> cannot see the difference between a legitimate SNI and the same byte
+> sequence appearing coincidentally in another ClientHello. In practice
+> this does not occur for domain-name patterns, but very short or
+> generic patterns (`api`, `cdn`) are best avoided.
+
 ### Limitations
 
-- **No ML on decrypted flows.** mitmproxy gives HTTP metadata, not TCP-level flow features. The RandomForest is out of distribution on synthesized features, so the interceptor runs the non-ML detectors only. A `ml_skipped_no_features` reason is attached to every such event.
-- **Certificate pinning breaks apps.** Mobile SDKs and some APIs refuse any cert that is not signed by the original issuer. The bypass list mitigates this but is not a cure.
-- **Performance.** mitmproxy adds ~5–15% latency per connection and runs on a single event loop. Suitable for a lab or small-office deployment, not for high-throughput production.
+- **No ML on decrypted flows.** sslsplit exposes HTTP metadata but no TCP-level flow features. The RandomForest is out of distribution on synthesized features, so the interceptor runs the non-ML detectors only. A `ml_skipped_no_features` reason is attached to every such event.
+- **Certificate pinning breaks apps.** Mobile SDKs and some APIs refuse any cert that is not signed by the original issuer. The SNI bypass list on the `/ssl` page addresses this: enabled SNI patterns are enforced at the iptables layer as `-m string` RETURN rules, so matching connections skip interception entirely. For services that do not present a stable SNI, fall back to IP-level bypass (`-d <ip> -j RETURN`) or disable the feature while those apps are in use.
+- **Performance.** sslsplit adds ~5–15% latency per connection. Suitable for a lab or small-office deployment, not for high-throughput production.
 - **Legal exposure.** MITM on networks you do not own is illegal in most jurisdictions. The `/ssl` page shows a warning — treat it as a real one.
 
-> **Package naming:** the TLS interception code lives in `ssl_inspect/`, **not** `ssl/`. A top-level package named `ssl` would shadow the Python standard library module and break `requests`, `urllib3`, and mitmproxy on import. Do not rename it back.
+> **Package naming:** the TLS interception code lives in `ssl_inspect/`, **not** `ssl/`. A top-level package named `ssl` would shadow the Python standard library module and break `requests` and `urllib3` on import. Do not rename it back.
 
 ---
 
@@ -664,6 +689,7 @@ existing `IDS_SENSOR_TOKEN` variable becomes the HMAC key.
 | `/analytics/api/*` | Analytics query endpoints (including MITRE coverage) |
 | `/audit/api/*` | Audit query endpoints |
 | `/ssl/api/*` | SSL management endpoints |
+| `/ssl/api/bypass/iptables-status` | Read-only view of the current firewall bypass state (used by the SSL page's sync indicator) |
 | `/metrics` | Prometheus metrics (loopback-only by default; extend `ALLOWED_IPS` in `uni-srver.py` for remote scrapers) |
 
 When the IDS engine is offline, the UI reflects an **OFFLINE** sensor state
@@ -692,7 +718,7 @@ ids-bachelor-thesis/
 ├── ids/                    # Queues, workers, metrics, AI orchestration
 ├── intelligence/           # TI, Zeek, sensor process, MITRE, sensor auth
 ├── runtime/                # Entry points and process supervisor
-├── ssl_inspect/            # Optional TLS interception (mitmproxy)
+├── ssl_inspect/            # Optional TLS interception (sslsplit)
 ├── static/                 # CSS and JavaScript assets
 ├── storage/                # DB layer, ORM models, persistence
 └── templates/              # HTML templates (login, dashboard, admin, settings, analytics, ssl, audit)
@@ -707,7 +733,7 @@ ids-bachelor-thesis/
 - **Python 3.10–3.13**
 - **MySQL Server 8.0+**
 - **Linux** (recommended) for packet capture — requires root or `CAP_NET_RAW` / `CAP_NET_ADMIN`
-- **Optional:** Zeek, ClamAV (`clamd`), AbuseIPDB and VirusTotal API keys, mitmproxy (for TLS interception)
+- **Optional:** Zeek, ClamAV (`clamd`), AbuseIPDB and VirusTotal API keys, sslsplit (for TLS interception)
 
 ### 1. Prepare the test environment
 
@@ -807,9 +833,13 @@ Optionally install as an editable package to expose the `ai-ids*` console script
 
 ```bash
 pip install -e .
+```
 
-# If you plan to use TLS interception, include the `ssl` extra:
-pip install -e ".[ssl]"
+If you plan to use TLS interception, install sslsplit:
+
+```bash
+sudo dnf install sslsplit -y     # Fedora / RHEL
+sudo apt install sslsplit        # Debian / Ubuntu
 ```
 
 ### 5. Configure the environment
@@ -928,7 +958,7 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 - **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs and authenticated sessions bypass the *default* limits — the dashboard's own polling generates several hundred requests per hour per open tab, and an authenticated SOC analyst is a trusted principal. Per-endpoint decorators on `/login` (10/min), `/check_totp` (5/min), and the MFA endpoints remain in force regardless. Tune the ceiling with `RATELIMIT_DEFAULT_HOURLY` and `RATELIMIT_DEFAULT_DAILY`. Extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
 - **`/metrics` is loopback-only by default.** If you scrape Prometheus from another host, add its IP to `ALLOWED_IPS`, or place a proxy in front that filters the endpoint.
 - **`ip-api.com` free tier is HTTP-only** and can be MITM'd. It contributes only a small weight to final scores; disable with `IPAPI_ENABLED=false` on untrusted networks.
-- **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/mitm-conf/mitmproxy-ca.pem` (chmod 600) and never commit it to source control.
+- **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/conf/ids-ca.pem` (chmod 600) and never commit it to source control.
 - **The root CA private key is stored on disk, not in MySQL.** A DB dump alone does not compromise the CA; it only exposes public metadata for the `/ssl` page.
 - **The audit log is an append-only table by convention.** Any code that updates or deletes rows from `audit_log` outside the retention worker is a bug. If you add new privileged actions, wire them through `storage.audit.audit()` so they appear in the trail.
 - **Audit rows are retained for 180 days** by default. If your compliance regime requires longer, edit `_AUDIT_RETENTION_DAYS` in `storage/audit.py` and ensure `packet_logs` retention is set accordingly.
@@ -1049,9 +1079,15 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 ### SSL interceptor not starting
 
 - Confirm `SSL_DECRYPTION_ENABLED=true` in `.env`.
-- Confirm mitmproxy is installed: `python -c "import mitmproxy; print(mitmproxy.__version__)"`.
+- Confirm sslsplit is installed: `which sslsplit && sslsplit -V`.
 - Check that port `8443` is free: `ss -tlnp | grep 8443`.
-- Look for `SSL interceptor exited` in `logs/*.log`.
+- Look for `SSL interceptor exited` in `logs/*.log`. sslsplit writes
+  errors to its own stderr, so the failure reason will be visible in the
+  interceptor's log output.
+- If the log shows `iptables bypass sync skipped: not running as root`,
+  the interceptor was launched without elevated privileges and cannot
+  install the SNI bypass rules. Start it via the supervisor under
+  `sudo python3.13 main.py`.
 
 ### HTTPS sites show certificate warnings after enabling decryption
 
@@ -1060,12 +1096,33 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 
 ### SSL decryption interferes with an app
 
-- The app uses certificate pinning. Add its SNI to the bypass list at `/ssl`.
+- The app uses certificate pinning. Add its SNI to the bypass list on
+  `/ssl`. The interceptor will install the corresponding iptables rule
+  within 30 seconds (or immediately, if the web UI runs as root under
+  `main.py`).
+- Verify the rule took effect:
+  `sudo iptables -t nat -L PREROUTING -n | grep <pattern>` — you should
+  see a `RETURN` rule with a `STRING match` on the SNI bytes.
+- For apps that do not present a stable SNI, add an IP-level bypass:
+  `sudo iptables -t nat -I PREROUTING 1 -d <app_server_ip> -j RETURN`.
+- As a last resort, disable TLS interception entirely:
+  `sudo python -m ssl_inspect.iptables remove`.
 - Common pinned services: Apple, Google GMS, banking apps, some mobile SDKs.
+
+### sslsplit cannot bind to port 8443
+
+- Another process is using the port. Check with `sudo ss -tlnp | grep 8443`.
+- Change the port by setting `SSL_INTERCEPT_PORT=8444` in `.env`, then update
+  the iptables redirect with `sudo python -m ssl_inspect.iptables remove`
+  followed by `install`.
 
 ### `AttributeError: module 'ssl' has no attribute ...`
 
-- The project has a top-level `ssl/` package that shadows the stdlib. Rename it to `ssl_inspect/` (see the maintainer note in [TLS Interception](#tls-interception-ssl-decryption)). This is a known Python footgun.
+- If you see this on an import of `ssl` or an HTTP client, the project
+  directory contains a top-level `ssl/` package that shadows the Python
+  standard library module. Rename it to `ssl_inspect/`. This project's
+  interception code already lives under `ssl_inspect/`, so this error
+  only appears if a stray `ssl/` folder was created by accident.
 
 ---
 
@@ -1083,5 +1140,5 @@ Proprietary — © Kamal Khalilov. See the repository for terms.
 - [Flask](https://flask.palletsprojects.com/) — web framework
 - [Chart.js](https://www.chartjs.org/) — dashboard charts
 - [Zeek](https://zeek.org/) — optional network analysis
-- [mitmproxy](https://mitmproxy.org/) — TLS interception engine
+- [sslsplit](https://www.roe.ch/SSLsplit) — TLS interception engine
 - [MITRE ATT&CK](https://attack.mitre.org/) — technique classification framework
