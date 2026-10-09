@@ -36,7 +36,6 @@ from storage.analytics import (
     get_recurring_actors,
     get_top_threats,
     get_weekly_summary,
-    start_analytics_worker,
 )
 from storage.persistence import (
     apply_telemetry_stats,
@@ -348,6 +347,21 @@ def role_required(*allowed_roles: str):
 
     return decorator
 
+def _is_ssl_proc_running() -> bool:
+    """
+    Best-effort check: is an SSL interceptor process listening on the
+    configured port? Used by /ssl/api/status.
+    """
+    import socket
+
+    port = int(os.getenv("SSL_INTERCEPT_PORT", "8443") or "8443")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.4)
+            s.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
 
 def start_retention_worker():
     while True:
@@ -1735,6 +1749,192 @@ def analytics_api_weekly_summary():
     except Exception as e:
         return api_error(str(e), status_code=500, code="internal_error")
 
+# --- SSL decryption management ---
+
+def _ssl_enabled() -> bool:
+    return (os.getenv("SSL_DECRYPTION_ENABLED", "false") or "false").lower() == "true"
+
+
+@app.route("/ssl")
+@login_required
+@role_required("admin")
+def ssl_page():
+    return render_template("ssl.html")
+
+
+@app.route("/ssl/api/status")
+@login_required
+@role_required("admin")
+def ssl_api_status():
+    from ssl_inspect import ca as ca_module
+
+    ca_exists = ca_module.ca_exists()
+    proc_running = _is_ssl_proc_running()
+    return api_ok({
+        "enabled": _ssl_enabled(),
+        "interceptor_running": proc_running,
+        "ca_present": ca_exists,
+        "intercept_port": int(os.getenv("SSL_INTERCEPT_PORT", "8443") or "8443"),
+    })
+
+
+@app.route("/ssl/api/ca")
+@login_required
+@role_required("admin")
+def ssl_api_ca_info():
+    from storage.db import get_session
+    from storage.models import SslConfig
+
+    session = get_session()
+    try:
+        row = session.get(SslConfig, 1)
+    finally:
+        session.close()
+
+    if row is None:
+        return api_ok(None)
+
+    return api_ok({
+        "common_name": row.ca_common_name,
+        "serial_hex": row.ca_serial_hex,
+        "not_before": row.ca_not_before.isoformat() if row.ca_not_before else None,
+        "not_after": row.ca_not_after.isoformat() if row.ca_not_after else None,
+        "fingerprint_sha256": row.ca_fingerprint_sha256,
+    })
+
+
+@app.route("/ssl/api/ca/cert.pem")
+@login_required
+@role_required("admin")
+def ssl_api_ca_download():
+    from ssl_inspect import ca as ca_module
+    if not ca_module.ca_exists():
+        abort(404)
+    pem = ca_module.read_ca_cert_pem()
+    return Response(
+        pem,
+        mimetype="application/x-pem-file",
+        headers={
+            "Content-Disposition": 'attachment; filename="enterprise-ai-ids-ca.crt"'
+        },
+    )
+
+
+@app.route("/ssl/api/ca/regenerate", methods=["POST"])
+@login_required
+@role_required("admin")
+@csrf_protect
+def ssl_api_ca_regenerate():
+    """
+    Regenerate the root CA. Destructive: every client that trusted the
+    old CA must re-install. The interceptor must be restarted for mitmproxy
+    to pick up the new cert.
+    """
+    from ssl_inspect import ca as ca_module
+    try:
+        ca_module.delete_ca()
+        cert = ca_module.generate_ca()
+        return api_ok({
+            "regenerated": True,
+            "common_name": cert.subject.rfc4514_string(),
+            "message": "Restart the supervisor for the new CA to take effect.",
+        })
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="ca_regen_failed")
+
+
+@app.route("/ssl/api/bypass", methods=["GET"])
+@login_required
+@role_required("admin")
+def ssl_api_bypass_list():
+    from sqlalchemy import select
+    from storage.db import get_session
+    from storage.models import SslBypassRule
+
+    session = get_session()
+    try:
+        rows = session.execute(
+            select(SslBypassRule).order_by(SslBypassRule.id.asc())
+        ).scalars().all()
+        return api_ok([
+            {
+                "id": r.id,
+                "match_type": r.match_type,
+                "pattern": r.pattern,
+                "reason": r.reason,
+                "enabled": bool(r.enabled),
+            }
+            for r in rows
+        ])
+    finally:
+        session.close()
+
+
+@app.route("/ssl/api/bypass", methods=["POST"])
+@login_required
+@role_required("admin")
+@csrf_protect
+def ssl_api_bypass_add():
+    import re as _re
+    from sqlalchemy import select
+    from storage.db import get_session
+    from storage.models import SslBypassRule
+
+    data = request.json or {}
+    match_type = (data.get("match_type") or "").strip().lower()
+    pattern = (data.get("pattern") or "").strip()
+    reason = (data.get("reason") or "").strip() or None
+
+    if match_type not in ("sni", "ip", "cidr"):
+        return api_error("Invalid match_type", status_code=400, code="invalid_match_type")
+    if not pattern or len(pattern) > 255:
+        return api_error("Invalid pattern", status_code=400, code="invalid_pattern")
+
+    # SNI: allow wildcard patterns like "*.example.com"
+    if match_type == "sni":
+        if not _re.fullmatch(r"[A-Za-z0-9\.\-\*]+", pattern):
+            return api_error("SNI pattern may only contain letters, digits, '.', '-', '*'",
+                             status_code=400, code="invalid_sni")
+
+    session = get_session()
+    try:
+        existing = session.execute(
+            select(SslBypassRule).where(
+                SslBypassRule.match_type == match_type,
+                SslBypassRule.pattern == pattern,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            return api_error("Rule already exists", status_code=400, code="duplicate")
+
+        session.add(SslBypassRule(
+            match_type=match_type, pattern=pattern, reason=reason, enabled=True,
+        ))
+        session.commit()
+        return api_ok({"added": True})
+    finally:
+        session.close()
+
+
+@app.route("/ssl/api/bypass/<int:rule_id>", methods=["DELETE"])
+@login_required
+@role_required("admin")
+@csrf_protect
+def ssl_api_bypass_delete(rule_id: int):
+    from storage.db import get_session
+    from storage.models import SslBypassRule
+
+    session = get_session()
+    try:
+        row = session.get(SslBypassRule, rule_id)
+        if not row:
+            return api_error("Rule not found", status_code=404, code="not_found")
+        session.delete(row)
+        session.commit()
+        return api_ok({"deleted": True})
+    finally:
+        session.close()
+
 # --- IDS engine health (dashboard live indicator) ---
 @app.route("/ids/health")
 @login_required
@@ -2057,6 +2257,7 @@ if __name__ == "__main__":
         import logging
         logging.getLogger(__name__).error("Failed to init IDS persistence", exc_info=True)
     Thread(target=start_retention_worker, daemon=True).start()
+    start_analytics_worker_thread()
     _start_ids_sensor_if_enabled()
     use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
     if use_ssl:

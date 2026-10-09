@@ -231,3 +231,41 @@ class ThreatPattern(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+class SslConfig(Base):
+    """Singleton row holding metadata about the active root CA."""
+    __tablename__ = "ssl_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    ca_common_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    ca_serial_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ca_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ca_not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ca_fingerprint_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ca_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SslBypassRule(Base):
+    """Per-SNI / per-IP bypass policy for the SSL interceptor."""
+    __tablename__ = "ssl_bypass_rules"
+    __table_args__ = (
+        UniqueConstraint("match_type", "pattern", name="uq_ssl_bypass"),
+        Index("ix_ssl_bypass_enabled", "enabled"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_type: Mapped[str] = mapped_column(String(16), nullable=False)  # 'sni' | 'ip' | 'cidr'
+    pattern: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )

@@ -1,627 +1,267 @@
-Good ideas — both features are worth doing, but they have very different scopes. SSL decryption is a **substantial addition** (new process, new attack surface, client-trust deployment), and the Analytics page is a **moderate addition** (new table, aggregation job, one new page). I'll lay out the architecture for each, give you the schema and hard-to-get-right pieces, and flag the decisions you'll need to make.
-
-Before writing any code, let me explain what each feature really involves, because a naive implementation will bite you.
+Good question — and the honest answer is more useful than a feature list. Let me start with a framing that matters for a bachelor thesis, then give you a prioritized list.
 
 ---
 
-## Part 1 — SSL Decryption
+## What "enterprise-grade" actually means
 
-### What "NGFW-style SSL decryption" actually is
+Enterprise buyers don't pick IDS products based on feature checklists. They pick them based on **operational maturity**. Five properties matter more than any feature:
 
-It's a **transparent TLS MITM proxy**. The flow:
+1. **Reliability** — the thing runs for months without intervention.
+2. **Observability** — you can see what it's doing and why.
+3. **Auditability** — every action is recorded, every alert is traceable to a rule.
+4. **Interoperability** — it talks to the tools you already have.
+5. **Recoverability** — when it breaks, you can fix it without losing data or trust.
 
-```
-Client  ──── TCP:443 ────▶  IDS (intercepts)  ──── TCP:443 ────▶  Real server
-                              │
-                              ├─ Presents a leaf cert for the SNI
-                              │  signed by your local CA
-                              ├─ Terminates TLS from the client
-                              ├─ Opens a *separate* TLS connection to the server
-                              ├─ Pipes plaintext between the two
-                              └─ Emits plaintext events for analysis
-```
+Your project already has more features than most bachelor theses. What it doesn't have yet is that operational spine. So the recommendations below are split into two groups: **breadth features** (things enterprise products offer) and **operational features** (things that make it *feel* enterprise-grade).
 
-For it to work end-to-end:
-
-1. **Clients must trust your local CA.** Otherwise every HTTPS site throws a cert warning.
-2. **Traffic must flow through the IDS.** Either the IDS is the gateway, or you use iptables `REDIRECT`/`TPROXY` to push TCP/443 into the proxy.
-3. **Some traffic must bypass.** Certificate-pinned apps (banking, some mobile SDKs, some CDNs) will break if you MITM them. NGFW has a bypass list; you need one too.
-
-### Recommended approach: use `mitmproxy` as the TLS engine
-
-Do **not** write your own TLS interception. It's a solved problem and doing it manually will consume your thesis budget. `mitmproxy` is mature, supports transparent mode, and exposes flow events via an addon API.
-
-```
-┌─────────────────┐     TCP:443      ┌──────────────────┐
-│   Client        │ ────────────────▶│  iptables        │
-└─────────────────┘  (redirect rule) │  REDIRECT        │
-                                     │  → :8443         │
-                                     └────────┬─────────┘
-                                              │
-                                              ▼
-                                     ┌──────────────────┐
-                                     │  mitmproxy       │
-                                     │  (transparent    │
-                                     │   mode, :8443)   │
-                                     └────────┬─────────┘
-                                              │  flow events
-                                              ▼
-                                     ┌──────────────────┐
-                                     │  ids_ssl_addon   │
-                                     │  (Python)        │
-                                     └────────┬─────────┘
-                                              │  plaintext
-                                              ▼
-                                     ┌──────────────────┐
-                                     │  Existing        │
-                                     │  analyze_packet  │
-                                     └──────────────────┘
-```
-
-### New components
-
-| File | Purpose |
-|---|---|
-| `ssl/__init__.py` | Package marker |
-| `ssl/ca.py` | CA generation, leaf cert issuance, storage |
-| `ssl/interceptor.py` | mitmproxy addon — emits plaintext events |
-| `ssl/iptables_setup.py` | Script to install/remove redirect rules |
-| `ssl/runner.py` | Launches mitmproxy in transparent mode |
-| `ssl/bypass.py` | Bypass list logic (SNI, IP, cert-pinned) |
-| `templates/ssl.html` | Web UI page |
-| `static/js/ssl.js` | Client-side interactions |
-| `uni-srver.py` (new routes) | CA download, cert list, bypass list CRUD |
-
-### Database schema (add to `bootstrap_db.py`)
-
-```sql
--- Root CA and issued leaf certificates
-CREATE TABLE IF NOT EXISTS ssl_certificates (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    cert_type VARCHAR(16) NOT NULL,          -- 'root_ca' | 'leaf'
-    common_name VARCHAR(255) NOT NULL,       -- hostname or CA name
-    serial_hex VARCHAR(64) NOT NULL,
-    not_before DATETIME(6) NOT NULL,
-    not_after DATETIME(6) NOT NULL,
-    cert_pem LONGTEXT NOT NULL,
-    key_pem LONGTEXT NULL,                    -- NULL for leaf certs (keys not stored)
-    key_encrypted BOOLEAN NOT NULL DEFAULT 0, -- root CA private key encrypted at rest
-    revoked BOOLEAN NOT NULL DEFAULT 0,
-    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    last_used_at DATETIME(6) NULL,
-    UNIQUE KEY uq_cert_cn_type (common_name, cert_type),
-    INDEX ix_ssl_cert_expiry (not_after),
-    INDEX ix_ssl_cert_type (cert_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Per-SNI bypass policy
-CREATE TABLE IF NOT EXISTS ssl_bypass_rules (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    match_type VARCHAR(16) NOT NULL,          -- 'sni' | 'ip' | 'cidr' | 'category'
-    pattern VARCHAR(255) NOT NULL,
-    reason VARCHAR(255) NULL,
-    enabled BOOLEAN NOT NULL DEFAULT 1,
-    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    UNIQUE KEY uq_bypass (match_type, pattern),
-    INDEX ix_bypass_enabled (enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Aggregated stats for the SSL page
-CREATE TABLE IF NOT EXISTS ssl_session_stats (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    bucket_start DOUBLE NOT NULL,             -- per-minute bucket
-    sni VARCHAR(255) NULL,
-    decrypted_count INT NOT NULL DEFAULT 0,
-    bypassed_count INT NOT NULL DEFAULT 0,
-    failed_count INT NOT NULL DEFAULT 0,
-    UNIQUE KEY uq_ssl_stat_bucket (bucket_start, sni),
-    INDEX ix_ssl_stat_ts (bucket_start)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
-
-### The critical security decisions you need to make
-
-**1. Where is the root CA private key stored?**
-
-Three options, in order of increasing safety:
-
-| Option | Where | Pro | Con |
-|---|---|---|---|
-| **A** | Plaintext PEM in `ssl/ca/root.key` on disk | Simple | Anyone with read access to the file forges certs |
-| **B** | Encrypted PEM in MySQL, key derived from `SSL_CA_PASSPHRASE` env var | Survives process restart, matches your existing `MySQL`/`.env` model | Passphrase in env is still a secret to protect |
-| **C** | OS keyring / KMS | Best | Overkill for a thesis |
-
-For a thesis, go with **Option B**. The web UI never exposes the passphrase; it only lets you generate a *new* CA (which rotates everything). This means a DB dump alone doesn't leak the CA.
-
-**2. Clients trust the CA how?**
-
-Document that it's a manual step. For testing:
-- **Linux**: `cp ca.pem /usr/local/share/ca-certificates/ids-ca.crt && update-ca-certificates`
-- **Firefox**: `about:config` → `security.enterprise_roots.enabled = true`, or import via `about:preferences#privacy`
-- **macOS**: Keychain Access → System → import + set to Always Trust
-
-Provide a `GET /ssl/ca.pem` endpoint so the user can download it from the web UI. Add copy buttons for the install commands.
-
-**3. Legal and ethical**
-
-MITM on traffic you don't own is illegal in most jurisdictions. Add a loud warning on the SSL page that this must only be enabled on networks you own or have explicit written consent to monitor. This isn't just polish — for a bachelor thesis defense, showing you understand the legal boundary is worth points.
-
-### The interceptor addon
-
-This is the piece that ties mitmproxy into your existing pipeline. Skeleton:
-
-```python
-# ssl/interceptor.py
-from __future__ import annotations
-
-import time
-from mitmproxy import http, ctx
-
-from ids.ai_analysis import analyze_packet
-from storage.persistence import enqueue_packet_log
-from logging_config import get_logger
-
-logger = get_logger(__name__)
-
-
-class IDSInterceptor:
-    """
-    mitmproxy addon: converts decrypted HTTP flows into the same packet
-    dicts the live sensor feeds to analyze_packet(), so SSL-decrypted
-    traffic goes through the exact same detection pipeline.
-    """
-
-    def request(self, flow: http.HTTPFlow) -> None:
-        self._emit(flow, direction="request")
-
-    def response(self, flow: http.HTTPFlow) -> None:
-        self._emit(flow, direction="response")
-
-    def _emit(self, flow: http.HTTPFlow, *, direction: str) -> None:
-        try:
-            req = flow.request
-            body = ""
-            if req.content:
-                body = req.content.decode("utf-8", errors="ignore")[:8192]
-
-            src_ip, src_port = flow.client_conn.peername or ("", 0)
-            dst_ip, dst_port = flow.server_conn.peername or ("", 0)
-
-            # Build a packet-shaped dict. The fields match what
-            # engine.feature_extractor produces, so downstream code does
-            # not need to know whether the traffic was TLS-decrypted.
-            data = {
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "src_port": int(src_port),
-                "dst_port": int(dst_port),
-                "protocol": "TCP",
-                "url": req.pretty_url,
-                "http": {
-                    "method": req.method,
-                    "host": req.host,
-                    "path": req.path,
-                    "url": req.pretty_url,
-                    "headers": dict(req.headers),
-                    "query": dict(req.query),
-                    "body": body,
-                },
-                "decrypted": True,          # flag so downstream can tell
-                "packet_send_time": time.time(),
-                "features": None,            # no flow-level features from mitmproxy
-            }
-
-            result = analyze_packet(data, dns_reasons=None, queue_pressure=0.0)
-
-            log_entry = {
-                "time": time.time(),
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "src_port": int(src_port),
-                "dst_port": int(dst_port),
-                "protocol": "TCP",
-                "url": data["url"],
-                "http": data["http"],
-                "status": result["classification"],
-                "reasons": result["reasons"],
-                "ai_label": result.get("ai_label"),
-                "ai_score": result.get("ai_score"),
-                "risk_score": result["risk_score"],
-                "confidence": result.get("confidence"),
-                "anomaly_score": result.get("anomaly_score"),
-                "ti_ip": result.get("ti_ip"),
-                "ti_url": result.get("ti_url"),
-                "ai_explanation": result.get("explanation"),
-            }
-            enqueue_packet_log(log_entry)
-
-        except Exception:
-            logger.error("SSL interceptor failed to emit flow", exc_info=True)
-```
-
-**Important:** `analyze_packet` calls `predict(data["features"])`, and mitmproxy doesn't give you the same flow-level features the Scapy path produces. Two options:
-
-- **A — Feature-less path.** In `analyze_packet`, guard against `features is None` and skip the ML steps, using only behavioral heuristics + payload analysis. Cleaner for SSL, but loses ML classification on decrypted traffic.
-- **B — Synthesize features.** Build a minimal feature vector from HTTP metadata (duration, byte counts, port). Won't be as accurate as live Scapy flows, but ML still contributes.
-
-I'd do **A** for a thesis — it's honest, and the SSL-decrypted content analysis (payload analyzer, TI URL lookup) is the real value here anyway. The behavioral heuristics will still catch SQL injection and command injection in the plaintext body.
-
-### Web UI — SSL page
-
-New template `templates/ssl.html`, admin-only, with:
-
-- **CA card**: shows CN, expiry, fingerprint. Buttons: *Regenerate CA* (destructive, warns it invalidates all client trust), *Download CA (PEM)*, *Download CA (DER)*.
-- **Leaf certs table**: hostname, issued at, expiry, last used. Filter by search. Sort. Row actions: *Revoke*, *Force re-issue on next connection*.
-- **Bypass rules**: match type + pattern + reason. Add/edit/delete. Suggested defaults pre-populated on first run (see below).
-- **Stats card**: connections decrypted today, connections bypassed today, failures (SNI missing, cert pinning detected).
-
-Suggested bypass defaults to insert at first bootstrap:
-
-| match_type | pattern | reason |
-|---|---|---|
-| `category` | `banking` | Cert-pinned financial sites |
-| `sni` | `*.icloud.com` | Apple cert pinning |
-| `sni` | `*.googleapis.com` | Android GMS pinning |
-| `sni` | `*.apple.com` | Apple cert pinning |
-| `sni` | `*.mozilla.org` | Firefox updates |
-| `sni` | `*.windowsupdate.com` | Windows updates |
-
-### iptables setup script
-
-```python
-# ssl/iptables_setup.py
-"""
-Redirect TCP/443 through the SSL interceptor.
-
-These rules only apply to forwarded traffic (not to the IDS's own outbound
-connections), so the IDS itself can still reach AbuseIPDB, VirusTotal, etc.
-"""
-import argparse
-import subprocess
-import sys
-
-LISTEN_PORT = 8443
-
-
-def install_rules() -> None:
-    # Redirect inbound TCP/443 destined for other hosts into the proxy.
-    subprocess.run([
-        "iptables", "-t", "nat", "-A", "PREROUTING",
-        "-p", "tcp", "--dport", "443",
-        "-j", "REDIRECT", "--to-port", str(LISTEN_PORT),
-    ], check=True)
-    print(f"Installed redirect 443 -> {LISTEN_PORT}")
-
-
-def remove_rules() -> None:
-    subprocess.run([
-        "iptables", "-t", "nat", "-D", "PREROUTING",
-        "-p", "tcp", "--dport", "443",
-        "-j", "REDIRECT", "--to-port", str(LISTEN_PORT),
-    ], check=True)
-    print("Removed redirect rule")
-
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("action", choices=("install", "remove"))
-    args = p.parse_args()
-
-    if sys.platform != "linux":
-        print("SSL interception setup only supports Linux.", file=sys.stderr)
-        sys.exit(1)
-
-    (install_rules if args.action == "install" else remove_rules)()
-```
-
-Run as root: `sudo python -m ssl.iptables_setup install`. Add a matching button on the SSL web page that displays the exact command for the user to copy (don't try to run it from the web UI — Flask isn't running as root, and it shouldn't be).
-
-### What you're signing up for
-
-Roughly:
-
-| Task | Effort |
-|---|---|
-| CA generation, storage, encryption | 1 day |
-| mitmproxy integration + addon | 1–2 days |
-| iptables setup + testing on a VM | 1 day |
-| Web UI page | 2 days |
-| Client trust installation + docs | half day |
-| Bypass rules + testing | 1 day |
-| Defense-quality docs + threat model | 1 day |
-
-~8 days of focused work. Doable, but it's a significant chunk.
+For a viva, the second group is where you win points. Anyone can add a new detector. Fewer students can explain how their system degrades gracefully under load, or how an analyst traces an alert back to the exact rule that fired.
 
 ---
 
-## Part 2 — Analytics page
+## Tier 1 — Highest impact, achievable in your remaining time
 
-This is more tractable and can be done independently.
+These are the ones I'd actually build. Each is self-contained, demos well, and is defensible.
 
-### Schema — a new aggregation table
+### 1. Audit log
+
+**What:** a new `audit_log` table that records every privileged action — logins, MFA changes, admin user management, SSL bypass rule edits, CA regeneration, config changes.
+
+**Schema sketch:**
 
 ```sql
-CREATE TABLE IF NOT EXISTS threat_patterns (
+CREATE TABLE audit_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    bucket_type VARCHAR(16) NOT NULL,          -- 'hourly' | 'daily' | 'weekly' | 'monthly'
-    bucket_start DOUBLE NOT NULL,              -- epoch seconds
-    src_ip VARCHAR(45) NULL,
-    host VARCHAR(255) NULL,
-    threat_category VARCHAR(64) NULL,          -- reason token, e.g. 'http_sqli'
-    event_count INT NOT NULL DEFAULT 0,
-    dangerous_count INT NOT NULL DEFAULT 0,
-    suspicious_count INT NOT NULL DEFAULT 0,
-    max_risk_score DOUBLE NULL,
-    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    INDEX ix_tp_bucket (bucket_type, bucket_start),
-    INDEX ix_tp_ip (src_ip, bucket_start),
-    INDEX ix_tp_host (host, bucket_start),
-    INDEX ix_tp_category (threat_category, bucket_start),
-    INDEX ix_tp_lookup (bucket_type, src_ip, host, threat_category)
+    ts DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    actor_id INT NULL,
+    actor_username VARCHAR(64) NULL,
+    actor_ip VARCHAR(45) NULL,
+    action VARCHAR(64) NOT NULL,      -- 'login', 'user.create', 'ssl.ca_regen'
+    target_type VARCHAR(32) NULL,     -- 'user', 'bypass_rule', 'ca'
+    target_id VARCHAR(64) NULL,
+    outcome VARCHAR(16) NOT NULL,     -- 'success', 'failure', 'denied'
+    detail_json LONGTEXT NULL,
+    INDEX ix_audit_ts (ts),
+    INDEX ix_audit_actor (actor_id, ts),
+    INDEX ix_audit_action (action, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-### Aggregation job
+Add a helper `audit(action, target_type=None, target_id=None, outcome="success", detail=None)` and call it from every state-changing route. Add a `/audit` page (admin-only) with filtering.
 
-New file `storage/analytics.py`:
+**Why it matters for a viva:** every enterprise compliance framework (SOC 2, ISO 27001, PCI-DSS) requires audit trails. This is a concrete implementation of a compliance control, and it's a page you can point at.
 
-```python
-from __future__ import annotations
+**Effort:** 1–2 days.
 
-import time
-from datetime import datetime, timezone
+---
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+### 2. Syslog / CEF / LEEF export
 
-from storage.db import get_session
-from storage.models import PacketLog, ThreatPattern
-from logging_config import get_logger
+**What:** forward every alert to an external SIEM in a standard format. Splunk, QRadar, ArcSight, and Elastic all ingest CEF or LEEF natively.
 
-logger = get_logger(__name__)
+**Implementation sketch:**
 
+- New `integrations/siem.py` with three formatters: syslog (RFC 5424), CEF, LEEF.
+- New env vars: `SIEM_ENABLED`, `SIEM_PROTOCOL` (udp/tcp/tls), `SIEM_HOST`, `SIEM_PORT`, `SIEM_FORMAT` (cef/leef/syslog), `SIEM_MIN_SEVERITY` (only forward suspicious+ or dangerous-only).
+- Hook into `persistence.record_analysis_result` or a new `alerts/siem_forwarder.py` thread that tails new `packet_logs` rows and forwards them.
+- Add a `/siem` config page with a "send test event" button.
 
-# Define the four bucket types and how to compute the bucket_start
-BUCKETS = {
-    "hourly": lambda ts: int(ts // 3600) * 3600,
-    "daily": lambda ts: int(ts // 86400) * 86400,
-    "weekly": lambda ts: int(ts // (7 * 86400)) * (7 * 86400),
-    "monthly": lambda ts: int(datetime.fromtimestamp(ts, tz=timezone.utc)
-                              .replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                              .timestamp()),
-}
+**Why it matters:** this is the single feature that makes a security team *want* to deploy your IDS. Every enterprise already has a SIEM. Your product either feeds it or it doesn't exist to them. This is also a very concrete, demonstrable thing in a demo — show an event hitting a local Splunk/Rsyslog/Elastic instance.
 
+**Effort:** 1–2 days.
 
-def _aggregate_bucket(bucket_type: str, since_ts: float) -> int:
-    """Aggregate packet_logs into threat_patterns for one bucket type."""
-    session = get_session()
-    try:
-        # Group by (bucket_start, src_ip, host, first reason)
-        # host is extracted from the url column
-        rows = session.execute(
-            select(
-                PacketLog.timestamp,
-                PacketLog.src_ip,
-                PacketLog.url,
-                PacketLog.classification,
-                PacketLog.risk_score,
-                PacketLog.reasons_json,
-            ).where(PacketLog.timestamp >= since_ts)
-             .where(PacketLog.classification.in_(("suspicious", "dangerous")))
-        ).all()
+---
 
-        bucket_fn = BUCKETS[bucket_type]
-        agg: dict[tuple, dict] = {}
+### 3. Detection tuning page
 
-        for ts, src_ip, url, cls, risk, reasons_json in rows:
-            bucket_start = bucket_fn(float(ts))
-            # Extract host from url
-            host = None
-            if url:
-                try:
-                    from urllib.parse import urlparse
-                    host = urlparse(url if "://" in url else f"http://{url}").hostname
-                except Exception:
-                    pass
-            # Extract primary threat category from reasons_json
-            category = None
-            if reasons_json:
-                import json
-                try:
-                    reasons = json.loads(reasons_json)
-                    if isinstance(reasons, list):
-                        # Prefer http_* or payload_* reason
-                        for r in reasons:
-                            if isinstance(r, str) and (r.startswith("http_") or r.startswith("payload_")):
-                                category = r
-                                break
-                        if category is None and reasons:
-                            category = str(reasons[0])
-                except Exception:
-                    pass
+**What:** a page that shows, for every rule / reason token / behavior detector, how often it fired in the last N days, on how many distinct sources, and the ratio of "confirmed true positive" to "dismissed." This is the operator's view for reducing false positives.
 
-            key = (bucket_start, src_ip, host, category)
-            entry = agg.setdefault(key, {
-                "event_count": 0,
-                "dangerous_count": 0,
-                "suspicious_count": 0,
-                "max_risk_score": 0.0,
-            })
-            entry["event_count"] += 1
-            if cls == "dangerous":
-                entry["dangerous_count"] += 1
-            else:
-                entry["suspicious_count"] += 1
-            entry["max_risk_score"] = max(entry["max_risk_score"], float(risk or 0))
+You already have most of the data in `packet_logs.reasons_json`. The missing piece is a way to mark an alert as a false positive.
 
-        # Upsert into threat_patterns
-        written = 0
-        for (bucket_start, src_ip, host, category), entry in agg.items():
-            stmt = (
-                mysql_insert(ThreatPattern)
-                .values(
-                    bucket_type=bucket_type,
-                    bucket_start=bucket_start,
-                    src_ip=src_ip,
-                    host=host,
-                    threat_category=category,
-                    event_count=entry["event_count"],
-                    dangerous_count=entry["dangerous_count"],
-                    suspicious_count=entry["suspicious_count"],
-                    max_risk_score=entry["max_risk_score"],
-                )
-                .on_duplicate_key_update(
-                    event_count=ThreatPattern.event_count + entry["event_count"],
-                    dangerous_count=ThreatPattern.dangerous_count + entry["dangerous_count"],
-                    suspicious_count=ThreatPattern.suspicious_count + entry["suspicious_count"],
-                    max_risk_score=func.greatest(ThreatPattern.max_risk_score, entry["max_risk_score"]),
-                )
-            )
-            session.execute(stmt)
-            written += 1
+**Sketch:**
 
-        session.commit()
-        return written
-    except Exception:
-        session.rollback()
-        logger.error("Analytics aggregation failed for bucket=%s", bucket_type, exc_info=True)
-        return 0
-    finally:
-        session.close()
+- Add `analyst_disposition` column to `packet_logs` (`unknown` / `true_positive` / `false_positive` / `benign_activity`).
+- Add a "Mark as false positive" button on the log detail modal.
+- New `/tuning` page with a table:
+  - Reason token
+  - Total fires (last 7d / 30d)
+  - Distinct source IPs
+  - % marked false positive
+  - Suggested threshold adjustment (a simple heuristic based on FP ratio)
 
+**Why it matters:** false-positive fatigue is the #1 reason IDS deployments get disabled. Enterprise buyers ask "how do I tune this?" — a page that answers that question is worth more than ten new detectors. This is also a very good thesis chapter: "operational tuning workflow."
 
-def run_analytics_aggregation(lookback_hours: int = 48) -> dict[str, int]:
-    """Aggregate the last N hours into all four bucket types."""
-    since_ts = time.time() - lookback_hours * 3600
-    results = {}
-    for bucket_type in BUCKETS:
-        results[bucket_type] = _aggregate_bucket(bucket_type, since_ts)
-    return results
+**Effort:** 2–3 days.
+
+---
+
+### 4. PCAP retention + replay
+
+**What:** write a rolling window of raw packets to disk (e.g. last 24 hours, capped at N GB), and provide a "replay" action on any log entry that feeds the original packets back through the classifier. This is how analysts confirm or refute an alert.
+
+**Sketch:**
+
+- New `engine/pcap_ring.py` that writes per-hour pcap files (`storage/pcap/2026-10-09-14.pcap`) with a total size cap, deleting oldest when over.
+- Update `ids_engine.py` to write every captured packet to the current ring file.
+- New `/replay/<log_id>` route that looks up the log's timestamp + 5-tuple, finds matching packets, and re-runs `analyze_packet` with the same features.
+- Show side-by-side: original classification vs. replayed classification.
+
+**Why it matters:** "why did it fire?" is the question every SOC analyst asks. Being able to answer it with the actual packets — not just the feature vector — is what separates an IDS from a nice demo. Also a great demo: replay an attack pcap and show the alerts appear.
+
+**Effort:** 2–3 days. Storage tuning is the fiddly part.
+
+---
+
+### 5. MITRE ATT&CK coverage matrix
+
+**What:** map every reason token, behavior, and heuristic to a MITRE ATT&CK technique ID, and show a coverage matrix on the analytics page.
+
+Example mapping:
+
+```
+http_SQLi           → T1190 (Exploit Public-Facing Application)
+port_scan           → T1046 (Network Service Discovery)
+flood               → T1498 (Network Denial of Service)
+dns_tunnel_suspected→ T1071.004 (DNS C2)
+reputation_ip_malic → T1071 (Application Layer Protocol)
+ml_attack           → (unclassified)
 ```
 
-Then a background worker (like your existing `start_retention_worker`):
+**Sketch:**
 
-```python
-def start_analytics_worker():
-    while True:
-        try:
-            run_analytics_aggregation(lookback_hours=48)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).error("Analytics worker failed", exc_info=True)
-        time.sleep(3600)  # hourly
-```
+- New `config/mitre_mapping.yaml` with the mapping table.
+- New `intelligence/mitre.py` with `classify(reasons) -> list[str]` returning technique IDs.
+- Add `mitre_techniques_json` column to `packet_logs`.
+- New card on the analytics page showing a heatmap of technique coverage over the last N days.
+- Add a "Coverage gaps" list — techniques the industry cares about that you *don't* detect (e.g. T1059 Command Execution, T1003 Credential Dumping).
 
-Start it in `uni-srver.py`'s `__main__` block alongside `start_retention_worker`.
+**Why it matters:** MITRE ATT&CK is the lingua franca of enterprise security. Mapping your detections to it is a one-afternoon job that makes the whole project look dramatically more sophisticated. On a viva panel, saying "we cover 8 of the top 20 ATT&CK techniques for network-borne attacks, and here are the specific gaps" is a strong statement.
 
-### API endpoints
+**Effort:** 1 day. Mostly data entry, but high impact.
 
-```python
-# uni-srver.py
+---
 
-@app.route("/analytics/heatmap")
-@login_required
-@role_required("admin", "soc")
-def analytics_heatmap():
-    """Day-of-week × hour heatmap of dangerous events, last N weeks."""
-    weeks = request.args.get("weeks", default=8, type=int)
-    ...
-    return api_ok({"labels": [...], "data": [...]})
+## Tier 2 — Good to add if you have time
 
-@app.route("/analytics/recurring-ips")
-@login_required
-@role_required("admin", "soc")
-def analytics_recurring_ips():
-    """IPs that appear on >= N distinct days in the last M days."""
-    min_days = request.args.get("min_days", default=3, type=int)
-    lookback_days = request.args.get("days", default=30, type=int)
-    ...
-    return api_ok([...])
+Each of these is a smaller lift and adds polish.
 
-@app.route("/analytics/recurring-hosts")
-@login_required
-@role_required("admin", "soc")
-def analytics_recurring_hosts():
-    """Hosts that appear on >= N distinct days."""
-    ...
+### 6. Webhooks (Slack, Teams, PagerDuty)
 
-@app.route("/analytics/top-threats")
-@login_required
-@role_required("admin", "soc")
-def analytics_top_threats():
-    """Threat categories ranked, with sparkline-ready timeseries."""
-    ...
-```
+Generic webhook on dangerous alerts. JSON body with severity, source IP, reason, link to the log detail page. Configure at `/settings` → Integrations. Any SOC will want this.
 
-### Web UI — Analytics page
+**Effort:** half a day.
 
-New template `templates/analytics.html`, route `/analytics`, link from the main nav. Sections:
+---
 
-1. **Weekly heatmap** — 7×24 grid (day-of-week × hour-of-day), colored by dangerous event count. Answer: *"which hours/days do I get attacked?"*
-2. **Recurring attackers** — table of IPs appearing on multiple distinct days, with first-seen, last-seen, total events, threat types. Answer: *"who keeps coming back?"*
-3. **Recurring hosts** — same for domains. Answer: *"which domains keep showing up?"*
-4. **Threat category breakdown** — bar chart + trend line per category. Answer: *"what kind of attacks am I facing?"*
-5. **Monthly pattern list** — "Every Friday around 14:00 UTC, IP 1.2.3.4 launches an HTTP SQLi attack" style cards, generated by finding bucket rows with high counts and stable periodicity.
+### 7. API tokens for external systems
 
-For point 5, use a simple periodicity detector: for each `src_ip` or `host`, compute the distribution of events across the 7 day-of-week buckets. If one day-of-week contains ≥60% of events, flag it. Do the same for hour-of-day, week-of-month.
+Right now the only way to query the API is with a browser session. Enterprise SIEMs, SOAR tools, and scripts need long-lived tokens. Add an `api_tokens` table with token hash, label, expiry, and scopes (read-only, admin). Add a "Create API token" button on `/settings` and accept the token in `Authorization: Bearer ...` on all `/ids/*` endpoints.
 
-```python
-def detect_periodic_pattern(src_ip: str, days: int = 60) -> dict | None:
-    """
-    Return {'dow': 4, 'share': 0.72, ...} if the IP attacks on a
-    consistent day-of-week, else None.
-    """
-    # Query threat_patterns daily buckets for this IP, last N days.
-    # Group by day-of-week, compute share of total events.
-    # If max share >= 0.60 and at least 3 distinct weeks, it's periodic.
-    ...
-```
+**Effort:** 1 day.
 
-Add to the analytics page as cards: *"Recurring Fridays — IP 1.2.3.4, 8 weeks running, avg 14 events per Friday"*.
+---
 
-### Historical backfill
+### 8. PCAP export button
 
-The aggregation job only fills forward. To populate the analytics page from day one:
+On the log detail modal, a "Download PCAP" button that grabs the matching packets from the ring buffer as a `.pcap`. Complements #4.
+
+**Effort:** half a day (after #4).
+
+---
+
+### 9. LDAP / OIDC login
+
+Let users log in with their existing corporate identity. Support one of:
+
+- LDAP bind (Active Directory, OpenLDAP) — most common in enterprises.
+- OIDC (Azure AD, Okta, Auth0) — simpler to implement with a library.
+
+Keep local accounts as a fallback for the break-glass admin. This is a concrete "integrations" checkbox.
+
+**Effort:** 2–3 days depending on provider. Mock the provider for the thesis demo.
+
+---
+
+### 10. Backup / restore CLI
+
+Two commands:
 
 ```bash
-python -m storage.analytics --backfill --days 30
+python -m storage.backup create --out /backup/ids-2026-10-09.sql.gz
+python -m storage.backup restore /backup/ids-2026-10-09.sql.gz
 ```
 
-Read all `packet_logs` from the last 30 days, bucket them, upsert into `threat_patterns`. Run once after deployment.
+Plus a nightly cron suggestion. Enterprise reviewers always ask "how do I back this up?" — having a documented answer is worth a paragraph in your thesis.
 
-### Effort estimate
-
-| Task | Effort |
-|---|---|
-| Schema + model | half day |
-| Aggregation job + backfill CLI | 1 day |
-| API endpoints (4–5 routes) | 1 day |
-| Web UI page with charts | 2 days |
-| Periodicity detector | 1 day |
-| Polish + tests | 1 day |
-
-~6 days. Doable in parallel with the SSL work if you split time.
+**Effort:** half a day.
 
 ---
 
-## Suggested order
+### 11. Configuration-as-code
 
-1. **Analytics first** — no security implications, ships fast, immediately useful, and it's a nice way to validate that the DB/aggregation design works before taking on SSL.
-2. **SSL decryption second** — big, but self-contained. Do the CA part first, get one host decrypting, then build the UI.
+Export/import the current configuration (bypass rules, thresholds, blocklist, alert policies) as a YAML file. Version it in Git. Push config to a running instance via an API endpoint. This is how mature teams manage multiple sensors.
 
-## Questions before I write the actual code
+**Effort:** 1 day.
 
-For each feature, I'd want to confirm:
+---
 
-**SSL:**
-1. Is `mitmproxy` acceptable as a dependency, or do you need a from-scratch implementation for the thesis? (I strongly recommend the former.)
-2. Where should the root CA private key live — plaintext file, or encrypted in MySQL with a passphrase in `.env`?
-3. Is this inline (IDS-as-gateway) or are you targeting a specific topology? The iptables rules differ.
-4. Do you want me to write the CA module first, or the whole feature end-to-end?
+### 12. Just-in-time admin elevation
 
-**Analytics:**
-1. Are 4 bucket types (hourly/daily/weekly/monthly) too many? 2 (daily + weekly) might be enough.
-2. Do you want the periodicity detector in the first pass, or just the raw aggregations?
-3. Should the analytics page live under `/analytics` (new top-level nav item) or as a tab within `/dashboard`?
+Currently an admin is always an admin. In enterprises, most admins should have a break-glass flow: request elevation, get it for 30 minutes, action is logged. Concretely: a new `role` value `soc_admin_pending`, a `POST /admin/elevate` route that bumps the current session to admin for 30 minutes, and an audit entry.
 
-Answer those and I'll produce the actual code files — schema additions for `bootstrap_db.py`, the `storage/analytics.py` module, the SSL modules, and the HTML/JS for both pages. If you want me to start with one feature only, tell me which, and I'll do that end-to-end first.
+**Effort:** half a day.
+
+---
+
+## Tier 3 — Mention in the thesis, don't build
+
+These are legitimate enterprise concerns that you can write about in the "future work" section without implementing. If a panel member asks "how would you scale this?", a paragraph about each is enough.
+
+- **Horizontal scaling** — Kafka / Redis Streams between sensor and storage. Your architecture is already event-shaped, so this is a natural extension.
+- **Cold storage tier** — Elasticsearch for recent, S3 for archive. Mention the retention policy you already have.
+- **Federated sensors** — multiple sensors reporting to a central manager. The `sensor_process` heartbeat pattern is a starting point.
+- **Model drift detection** — PSI/KS test on incoming feature distributions vs. training data.
+- **Federated learning across sensors** — collective model improvement without sharing raw data.
+- **Zero-trust internals** — mTLS between every component, SPIFFE/SPIRE identities.
+- **Kubernetes / Helm chart** — for container-native deployment.
+- **SOAR integration** — automatic remediation. Block the IP, quarantine the host. Careful: this turns your IDS into an IPS, with all the legal implications.
+- **CMDB / asset inventory** — distinguish internal from external IPs, weight alerts accordingly.
+
+---
+
+## What NOT to do
+
+A few tempting features that would hurt more than help:
+
+- **Don't add more detectors.** You have plenty. Accuracy and tuning matter more than coverage.
+- **Don't rewrite the frontend framework.** Vanilla JS + Flask templates is fine for a thesis. Rewriting in React just burns time.
+- **Don't implement IPS mode (auto-blocking) unless you're prepared for the legal discussion.** An IDS that observes is a very different product from an IPS that acts. If a bug blocks production traffic during your demo, you won't recover.
+- **Don't try to do all of Tier 1.** Pick 2, do them thoroughly. A well-tuned audit log + SIEM export is worth more than five half-finished features.
+
+---
+
+## If you only have time for three things
+
+Pick these:
+
+1. **Audit log** (#1) — the fastest, highest-leverage enterprise feature. Every compliance framework requires it, and it's mechanical to implement.
+2. **SIEM export** (#2) — the feature that makes security teams care. CEF over syslog is half a page of code and enormous credibility.
+3. **MITRE ATT&CK mapping** (#5) — the cheapest thing that makes the project *look* sophisticated, because the vocabulary is exactly what enterprise panels expect.
+
+If you have a fourth slot: **Detection tuning page** (#3). It's the one that shows you understand the *operational* reality of running an IDS, not just building one.
+
+---
+
+## For your thesis defense
+
+Whatever you build, be ready to answer:
+
+- "How does your system degrade under load?" → you have queue backpressure + sampling. Point at the metrics.
+- "How do I know an alert is trustworthy?" → this is where the tuning page and audit log pay off.
+- "How do I integrate this with my existing SOC?" → SIEM export + API tokens.
+- "What happens when the sensor crashes?" → supervisor + heartbeat + OFFLINE state.
+- "How do I audit what an analyst did?" → audit log.
+- "How do you avoid false positives?" → reason-token tuning page + the thresholds in `.env`.
+
+Every one of those answers is stronger with one of the Tier 1 items implemented, and weaker without. That's why they're the top of the list.
+
+Want me to produce the implementation for any specific one? If so, tell me which, and I'll give you the schema, the modules, the routes, the templates, and the exact find/replace blocks against your current code — same format as the analytics and SSL features. My suggestion is to start with the audit log, because it's the one that touches every other feature you might add later.

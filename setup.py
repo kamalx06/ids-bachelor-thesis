@@ -21,7 +21,13 @@ from setuptools import Command, find_packages, setup
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
-# Application packages (flat layout under project root)
+# Application packages (flat layout under project root).
+#
+# Note: the TLS interception package is named `ssl_inspect`, NOT `ssl`.
+# A top-level package named `ssl` would shadow the Python standard library
+# module of the same name and break `requests`, `urllib3`, and mitmproxy
+# on import -- when running from the repo root, sys.path[0] takes priority
+# over the stdlib.
 PACKAGE_NAMES: Sequence[str] = (
     "ai",
     "alerts",
@@ -30,6 +36,7 @@ PACKAGE_NAMES: Sequence[str] = (
     "ids",
     "intelligence",
     "runtime",
+    "ssl_inspect",
     "storage",
 )
 
@@ -54,7 +61,8 @@ def _read_long_description() -> str:
             return path.read_text(encoding="utf-8")
     return (
         "Enterprise AI IDS — modular intrusion detection with Flask dashboard, "
-        "MySQL persistence, and scikit-learn models."
+        "MySQL persistence, scikit-learn models, and optional NGFW-style TLS "
+        "interception."
     )
 
 
@@ -139,6 +147,12 @@ setup(
     install_requires=requirements,
     extras_require={
         "dev": ["pytest"],
+        # Optional: TLS interception via mitmproxy. Not installed by default
+        # because it's only needed when SSL_DECRYPTION_ENABLED=true, and it
+        # pulls in a large dependency tree (mitmproxy, pyOpenSSL, msgpack,
+        # protobuf, ...). Install with:
+        #     pip install -e ".[ssl]"
+        "ssl": ["mitmproxy>=10.0"],
     },
     entry_points={
         "console_scripts": [
@@ -147,6 +161,7 @@ setup(
             "ai-ids-engine=runtime.entrypoints:run_ids_engine",
             "ai-ids-bootstrap-db=runtime.entrypoints:run_bootstrap_db",
             "ai-ids-retrain=runtime.entrypoints:run_retrain",
+            "ai-ids-ssl-engine=runtime.entrypoints:run_ssl_engine",
         ],
     },
     cmdclass=cmdclass,

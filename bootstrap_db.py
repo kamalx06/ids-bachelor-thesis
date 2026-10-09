@@ -136,6 +136,30 @@ CREATE TABLE IF NOT EXISTS threat_patterns (
     INDEX ix_tp_category (threat_category, bucket_start),
     INDEX ix_tp_lookup (bucket_type, src_ip, host, threat_category)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ssl_config (
+    id INT PRIMARY KEY DEFAULT 1,
+    ca_common_name VARCHAR(255) NOT NULL,
+    ca_serial_hex VARCHAR(64) NULL,
+    ca_not_before DATETIME(6) NULL,
+    ca_not_after DATETIME(6) NULL,
+    ca_fingerprint_sha256 VARCHAR(128) NULL,
+    ca_created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO ssl_config (id, ca_common_name) VALUES (1, 'Enterprise AI IDS Root CA');
+
+CREATE TABLE IF NOT EXISTS ssl_bypass_rules (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    match_type VARCHAR(16) NOT NULL,
+    pattern VARCHAR(255) NOT NULL,
+    reason VARCHAR(255) NULL,
+    enabled BOOLEAN NOT NULL DEFAULT 1,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_ssl_bypass (match_type, pattern),
+    INDEX ix_ssl_bypass_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -320,6 +344,44 @@ def _bootstrap_sqlite_training_store() -> None:
         logger.debug("SQLite training schema bootstrap skipped: %s", exc)
 
 
+def _ensure_default_ssl_bypass_rules() -> None:
+    """
+    Seed a conservative bypass list so certificate-pinned services
+    (Apple, Google, banking) don't break on first SSL interceptor start.
+    """
+    from sqlalchemy import select
+
+    from storage.models import SslBypassRule
+
+    defaults = [
+        ("sni", "*.icloud.com", "Apple services (cert-pinned)"),
+        ("sni", "*.apple.com", "Apple services (cert-pinned)"),
+        ("sni", "*.mzstatic.com", "Apple CDN (cert-pinned)"),
+        ("sni", "*.googleapis.com", "Android GMS (cert-pinned)"),
+        ("sni", "*.gstatic.com", "Google CDN"),
+        ("sni", "*.mozilla.org", "Firefox updates"),
+        ("sni", "*.windowsupdate.com", "Windows updates"),
+        ("sni", "*.microsoft.com", "Microsoft services"),
+    ]
+    try:
+        with _db_session() as session:
+            existing = session.execute(
+                select(SslBypassRule.id).limit(1)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+            for match_type, pattern, reason in defaults:
+                session.add(SslBypassRule(
+                    match_type=match_type,
+                    pattern=pattern,
+                    reason=reason,
+                    enabled=True,
+                ))
+            logger.info("Seeded %d default SSL bypass rules", len(defaults))
+    except Exception as exc:
+        logger.debug("SSL bypass seed skipped: %s", exc)
+
+
 def bootstrap_database(*, force: bool = False) -> int:
     """
     Full idempotent database initialization.
@@ -346,6 +408,7 @@ def bootstrap_database(*, force: bool = False) -> int:
         _ensure_ids_statistics_row()
         _ensure_default_admin()
         _bootstrap_sqlite_training_store()
+        _ensure_default_ssl_bypass_rules()
     except Exception as exc:
         logger.error("Schema bootstrap failed: %s", exc, exc_info=True)
         return 1

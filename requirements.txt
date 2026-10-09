@@ -20,3 +20,4 @@ imghdr-lts
 pandas
 pytest
 setuptools==81.0.0
+mitmproxy>=10.0

@@ -1,16 +1,23 @@
 """
 Enterprise AI IDS — application entry point (process supervisor).
 
-Runs database bootstrap, then starts two separate OS processes:
-  1. ids_engine.py  — packet capture / AI / persistence
-  2. uni-srver.py   — Flask Web UI / dashboard
+Runs database bootstrap, checks AI models, then starts up to three separate
+OS processes:
+  1. ids_engine.py       — packet capture / AI / persistence
+  2. uni-srver.py        — Flask Web UI / dashboard
+  3. ssl_inspect/engine  — optional TLS interceptor (mitmproxy)
 
-If the IDS engine crashes, the Web UI keeps running and the dashboard shows OFFLINE.
+The SSL interceptor is only started when SSL_DECRYPTION_ENABLED=true.
+
+If the IDS engine crashes, the Web UI keeps running and the dashboard
+shows OFFLINE. If the SSL interceptor crashes, the rest of the stack is
+unaffected; decrypted traffic analysis pauses until it restarts.
 
 Usage:
-  python main.py              # recommended: both processes
+  python main.py              # recommended: Web UI + IDS (+ SSL if enabled)
   python ids_engine.py        # IDS only
   python uni-srver.py         # Web UI only (optional IDS via WEBUI_START_IDS_SENSOR)
+  python -m ssl_inspect.engine  # SSL interceptor only
   python bootstrap_db.py      # database setup only
 """
 

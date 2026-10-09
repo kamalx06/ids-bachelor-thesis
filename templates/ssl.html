@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSL Decryption — AI IDS</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>SSL Decryption</h1>
+            <p class="dash-tagline">NGFW-style TLS interception</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
+        <a href="/ssl" class="dash-nav-link">SSL</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <div class="alert info" style="margin-bottom: 20px;">
+        <strong>Legal notice:</strong> SSL decryption intercepts and terminates TLS
+        traffic. Only enable this on networks you own or have explicit written
+        authorization to monitor. Doing so on networks you do not control may be
+        illegal in your jurisdiction.
+    </div>
+
+    <div id="sslAlert" class="" aria-live="polite"></div>
+
+    <section class="card dash-logs-panel" style="margin-bottom: 24px;">
+        <div class="dash-section-head">
+            <h2>Status</h2>
+        </div>
+        <div class="dash-kpi-grid">
+            <article class="dash-kpi dash-kpi--neutral">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Feature</span>
+                    <span class="dash-kpi-value" id="sslEnabled">—</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--accent">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Interceptor</span>
+                    <span class="dash-kpi-value" id="sslRunning">—</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--safe">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Root CA</span>
+                    <span class="dash-kpi-value" id="sslCaPresent">—</span>
+                </div>
+            </article>
+            <article class="dash-kpi dash-kpi--warn">
+                <div class="dash-kpi-body">
+                    <span class="dash-kpi-label">Port</span>
+                    <span class="dash-kpi-value" id="sslPort">—</span>
+                </div>
+            </article>
+        </div>
+    </section>
+
+    <section class="card dash-logs-panel" style="margin-bottom: 24px;">
+        <div class="dash-section-head">
+            <h2>Root certificate authority</h2>
+            <p class="dash-section-desc">Clients must trust this CA for interception to work without warnings.</p>
+        </div>
+        <table class="dash-table">
+            <tbody>
+                <tr><th>Common name</th><td id="caCn">—</td></tr>
+                <tr><th>Serial</th><td><code id="caSerial">—</code></td></tr>
+                <tr><th>Valid from</th><td id="caNotBefore">—</td></tr>
+                <tr><th>Valid until</th><td id="caNotAfter">—</td></tr>
+                <tr><th>SHA-256 fingerprint</th><td><code style="word-break: break-all;" id="caFingerprint">—</code></td></tr>
+            </tbody>
+        </table>
+        <div class="dash-search-actions" style="margin-top: 16px;">
+            <a class="primary dash-btn" href="/ssl/api/ca/cert.pem" download>Download CA (PEM)</a>
+            <button class="secondary dash-btn" id="regenerateCaBtn" type="button">Regenerate CA</button>
+        </div>
+    </section>
+
+    <section class="card dash-logs-panel" style="margin-bottom: 24px;">
+        <div class="dash-section-head">
+            <h2>Client trust installation</h2>
+            <p class="dash-section-desc">Install the downloaded CA on each client to avoid certificate warnings.</p>
+        </div>
+        <pre style="background:#060a14; padding:16px; border-radius:10px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#cbd5e1; overflow:auto;"># Linux (Debian/Ubuntu)
+sudo cp enterprise-ai-ids-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+
+# Linux (Fedora/RHEL)
+sudo cp enterprise-ai-ids-ca.crt /etc/pki/ca-trust/source/anchors/
+sudo update-ca-trust
+
+# Firefox
+about:config → security.enterprise_roots.enabled = true
+# then import the CA from about:preferences#privacy
+
+# macOS
+# Keychain Access → System → import → set to "Always Trust"</pre>
+    </section>
+
+    <section class="card dash-logs-panel" style="margin-bottom: 24px;">
+        <div class="dash-section-head">
+            <h2>Enable interception</h2>
+            <p class="dash-section-desc">These commands redirect TCP/443 into the interceptor. Run as root.</p>
+        </div>
+        <pre style="background:#060a14; padding:16px; border-radius:10px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#cbd5e1; overflow:auto;"># Redirect 443 → interceptor
+sudo python -m ssl.iptables install
+
+# Exclude the IDS host itself (adjust IP)
+sudo iptables -t nat -I PREROUTING 1 -s &lt;IDS_HOST_IP&gt; -j RETURN
+
+# When done
+sudo python -m ssl.iptables remove</pre>
+    </section>
+
+    <section class="card dash-logs-panel">
+        <div class="dash-section-head">
+            <h2>Bypass rules</h2>
+            <p class="dash-section-desc">SNI patterns and IPs that skip TLS interception. Add certificate-pinned services here.</p>
+        </div>
+        <div class="field-group dash-filter-grid" style="margin-bottom: 12px;">
+            <div class="field field--narrow">
+                <label for="bpType">Type</label>
+                <select id="bpType">
+                    <option value="sni">SNI pattern</option>
+                    <option value="ip">IP</option>
+                    <option value="cidr">CIDR</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="bpPattern">Pattern</label>
+                <input id="bpPattern" type="text" placeholder="e.g., *.example.com or 10.0.0.0/8" maxlength="255">
+            </div>
+            <div class="field">
+                <label for="bpReason">Reason (optional)</label>
+                <input id="bpReason" type="text" placeholder="why this is bypassed" maxlength="255">
+            </div>
+            <div class="field field--narrow">
+                <label>&nbsp;</label>
+                <button class="primary dash-btn" id="addBypassBtn" type="button">Add rule</button>
+            </div>
+        </div>
+        <div class="dash-table-wrap">
+            <table class="dash-table">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Pattern</th>
+                        <th>Reason</th>
+                        <th>Enabled</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="bypassTbody">
+                    <tr><td colspan="5" class="empty">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<script src="/static/js/ssl.js"></script>
+</body>
+</html>

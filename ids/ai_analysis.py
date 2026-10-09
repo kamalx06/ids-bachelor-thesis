@@ -293,7 +293,18 @@ def analyze_packet(
     queue_pressure: float = 0.0,
     skip_heavy_enrichment: bool = False,
 ) -> dict[str, Any]:
-    rf_pred, iso_pred, ml_score, ml_label, ai_reasons, detail = predict(data["features"])
+    features = data.get("features")
+    if features is None:
+        # SSL-decrypted flows (ssl_inspect/interceptor.py) arrive without flow-level
+        # features. Run the non-ML detectors: payload analysis, HTTP content
+        # checks, behavior, and TI lookups. Score comes from heuristics + TI
+        # only, so the ML contribution is zero and a reason token is added so
+        # downstream consumers can tell the classification was feature-blind.
+        rf_pred, iso_pred, ml_score, ml_label, ai_reasons, detail = (
+            0, 1, 0.0, "safe", ["ml_skipped_no_features"], {},
+        )
+    else:
+        rf_pred, iso_pred, ml_score, ml_label, ai_reasons, detail = predict(features)
 
     behavior = detect_behavior(data["src_ip"], data.get("dst_port"))
     heuristic_boost, heuristic_reasons = _heuristic_signals(data)

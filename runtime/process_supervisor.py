@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 IDS_ENGINE_SCRIPT = REPO_ROOT / "ids_engine.py"
 WEB_SERVER_SCRIPT = REPO_ROOT / "uni-srver.py"
+SSL_ENGINE_SCRIPT = REPO_ROOT / "ssl_inspect" / "engine.py"
 
 
 class ProcessSupervisor:
@@ -21,6 +22,7 @@ class ProcessSupervisor:
         self._shutdown = False
         self._ids_proc: subprocess.Popen | None = None
         self._web_proc: subprocess.Popen | None = None
+        self._ssl_proc: subprocess.Popen | None = None
 
     def _base_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -77,8 +79,23 @@ class ProcessSupervisor:
             proc.kill()
             proc.wait(timeout=3)
 
+    def start_ssl_interceptor(self) -> subprocess.Popen:
+        if not SSL_ENGINE_SCRIPT.is_file():
+            raise FileNotFoundError(f"SSL engine script not found: {SSL_ENGINE_SCRIPT}")
+
+        env = self._base_env()
+        proc = subprocess.Popen(
+            [sys.executable, str(SSL_ENGINE_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+        )
+        self._ssl_proc = proc
+        logger.info("SSL interceptor started pid=%s", proc.pid)
+        return proc
+
     def shutdown(self) -> None:
         self._shutdown = True
+        self._terminate(self._ssl_proc, "SSL interceptor")
         self._terminate(self._ids_proc, "IDS engine")
         self._terminate(self._web_proc, "Web server")
 
@@ -128,9 +145,22 @@ class ProcessSupervisor:
             self.shutdown()
             return 1
 
+        ssl_enabled = (
+            os.getenv("SSL_DECRYPTION_ENABLED", "false") or "false"
+        ).lower() == "true"
+        if ssl_enabled:
+            try:
+                self.start_ssl_interceptor()
+            except Exception:
+                logger.error(
+                    "Failed to start SSL interceptor — continuing without it. "
+                    "Set SSL_DECRYPTION_ENABLED=true and check the logs.",
+                    exc_info=True,
+                )
+
         logger.info(
-            "Supervisor active — Web UI and IDS engine are separate processes. "
-            "IDS crash will not stop the dashboard."
+            "Supervisor active — Web UI, IDS engine%s are separate processes.",
+            ", SSL interceptor" if ssl_enabled and self._ssl_proc else "",
         )
 
         last_ids_restart = 0.0
@@ -156,6 +186,15 @@ class ProcessSupervisor:
                     code,
                 )
                 self._ids_proc = None
+
+            if self._ssl_proc and self._ssl_proc.poll() is not None:
+                code = self._ssl_proc.returncode
+                logger.warning(
+                    "SSL interceptor exited (code=%s). Web UI and IDS engine "
+                    "continue; decrypted traffic analysis is paused.",
+                    code,
+                )
+                self._ssl_proc = None
                 if auto_restart and (time.time() - last_ids_restart) >= restart_cooldown:
                     logger.info("Auto-restarting IDS engine...")
                     self.start_ids_engine()

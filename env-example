@@ -1,83 +1,278 @@
-# Flask / Application Settings
-FLASK_SECRET=<anysecret>
+# =============================================================================
+# Enterprise AI IDS — environment configuration template
+# =============================================================================
+#
+# Copy this file to `.env` and fill in the values:
+#
+#     cp env-example .env
+#
+# NEVER commit `.env` with real secrets. This `env-example` file is a template
+# and is safe to commit. Generate secrets with:
+#
+#     python -c "import secrets; print(secrets.token_hex(32))"     # FLASK_SECRET
+#     python -c "import secrets; print(secrets.token_urlsafe(32))" # IDS_SENSOR_TOKEN
+#
+# Anything in <angle-brackets> is a placeholder that MUST be replaced.
+# Optional features are marked (optional).
+#
+# -----------------------------------------------------------------------------
+
+# =============================================================================
+# Application / Web UI
+# =============================================================================
+# Flask session secret — required. Changing this invalidates all sessions.
+FLASK_SECRET=<generate-with-secrets.token_hex(32)>
+
+# "true" = HTTPS on port 5000 with an ad-hoc self-signed certificate (default)
+# "false" = plain HTTP. Only use false behind a TLS-terminating reverse proxy.
+WEB_UI_SSL=true
+
+# If terminating TLS at a reverse proxy, set the number of trusted proxies so
+# Flask honors X-Forwarded-* headers. 0 = directly exposed. (optional)
+TRUSTED_PROXIES=0
+
+# Custom TLS cert/key for the web UI. When both are set, they replace the
+# ad-hoc certificate. (optional)
+#SSL_CERT_FILE=/etc/ssl/private/ids.crt
+#SSL_KEY_FILE=/etc/ssl/private/ids.key
+
+# Logging verbosity: DEBUG, INFO, WARNING, ERROR
 LOG_LEVEL=INFO
 
-# SMTP Alerting (required by uni-server.py)
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=yourgmail@gmail.com
-SMTP_PASSWORD=<smtppassword>
-SMTP_FROM=yourgmail@gmail.com
-ALERT_RECIPIENTS=yourgmail@gmail.com
+# JSON log output (one JSON object per line). Useful for log shippers. (optional)
+IDS_LOG_JSON=false
 
-# MySQL Database (required by storage/db.py)
+# Extra debug output (in addition to LOG_LEVEL). (optional)
+IDS_DEBUG=false
+
+# Log file directory and rotation. Defaults to <repo>/logs/. (optional)
+#IDS_LOG_DIR=logs
+#IDS_LOG_MAX_BYTES=10485760
+#IDS_LOG_BACKUP_COUNT=5
+
+# =============================================================================
+# MySQL
+# =============================================================================
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=test_user
 MYSQL_PASSWORD=change-me
 MYSQL_DB=ids_db_test
-IDS_BOOTSTRAP_ADMIN_USER=<user>
-IDS_BOOTSTRAP_ADMIN_PASSWORD=<pass>
 
-# Optional DB Pool Tuning
+# Bootstrap admin account — created only when the `users` table is empty.
+IDS_BOOTSTRAP_ADMIN_USER=<admin-username>
+IDS_BOOTSTRAP_ADMIN_PASSWORD=<admin-password>
+
+# Connection pool tuning. Defaults are fine for a single-host deployment.
 DB_POOL_SIZE=5
 DB_MAX_OVERFLOW=10
 
-# IDS Sensor Configuration
+# SQLite training store (legacy, used by the retrainer as a fallback).
+#DB_PATH=ids.db
+
+# =============================================================================
+# SMTP (alerts + email OTP) — optional
+# =============================================================================
+# SMTP is optional. It is only required if you use email alerts or
+# email-based OTP. If unset, those features are silently disabled and
+# the rest of the IDS runs normally.
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=<sender@gmail.com>
+SMTP_PASSWORD=<app-specific-password>
+SMTP_FROM=<sender@gmail.com>
+
+# Comma-separated list of alert recipients.
+ALERT_RECIPIENTS=<recipient@example.com>
+
+# =============================================================================
+# IDS Sensor — packet capture
+# =============================================================================
+# Network interface to sniff. Common values: eth0, ens18, wlan0.
 SNIFFER_INTERFACE=eth0
+
+# BPF filter applied to the capture. "ip" captures all IPv4 traffic.
+# Examples: "tcp or udp", "not port 22", "net 10.0.0.0/8"
 SNIFFER_BPF=ip
+
+# =============================================================================
+# IDS Sensor — performance tuning (optional, sensible defaults)
+# =============================================================================
+# Analysis worker threads (default: CPU count, capped at 16)
 IDS_WORKER_COUNT=8
-IDS_QUEUE_MAXSIZE=50000
-IDS_LOG_QUEUE_MAXSIZE=50000
+
+# Feature-extraction threads between capture and analysis
+# (default: min(4, CPU count); 0 = inline)
 IDS_PREPROCESS_WORKERS=4
+
+# Queue sizes. Larger = more burst tolerance, more memory.
+IDS_QUEUE_MAXSIZE=50000
 IDS_RAW_QUEUE_MAXSIZE=10000
+IDS_LOG_QUEUE_MAXSIZE=50000
+
+# Sharded locks for concurrent flow/behavior tracking. Higher = less contention.
 IDS_FLOW_SHARDS=128
 IDS_BEHAVIOR_SHARDS=64
+
+# Idle flow eviction window (seconds). Flows silent for longer are dropped.
+IDS_FLOW_IDLE_TIMEOUT_S=300
+
+# Packet processing retry on transient handler errors.
+IDS_PACKET_MAX_RETRIES=2
+
+# Worker watchdog: a worker silent for longer than this is restarted.
+IDS_WATCHDOG_INTERVAL=15
+IDS_WORKER_STALL_SEC=120
+
+# Sensor heartbeat file freshness (seconds). Web UI marks the sensor OFFLINE
+# after this gap. Must be greater than IDS_HEARTBEAT_INTERVAL_SEC.
+IDS_HEARTBEAT_STALE_SEC=30
+IDS_HEARTBEAT_INTERVAL_SEC=5
+
+# Under sustained queue pressure, drop 3 of every 4 packets to keep the
+# workers from falling further behind.
+IDS_PRESSURE_SAMPLE_AT=0.80
+
+# Rate-limit "queue full" warnings to once per this many seconds.
+IDS_DROP_LOG_INTERVAL=5
+
+# =============================================================================
+# IDS Sensor — detection thresholds
+# =============================================================================
+# Fusion thresholds for the final classification.
+IDS_SUSPICIOUS_THRESHOLD=0.52
+IDS_DANGEROUS_THRESHOLD=0.78
+
+# Port-scan detection: distinct destination ports within a rolling window.
+IDS_PORT_SCAN_THRESHOLD=25
 IDS_PORT_SCAN_WINDOW=8
+
+# Flood detection: packets from one source within a rolling window.
 IDS_FLOOD_THRESHOLD=120
 IDS_FLOOD_WINDOW=3
 
+# =============================================================================
+# IDS Sensor — data persistence
+# =============================================================================
+# Persist "safe" events to packet_logs too. Off by default to save space.
+IDS_PERSIST_SAFE_LOGS=false
+
+# How often to flush the dashboard counters to MySQL (seconds).
+IDS_STATS_PERSIST_INTERVAL=2
+
+# Batch size and flush interval for the async DB writer.
+IDS_DB_BATCH_SIZE=50
+IDS_DB_FLUSH_INTERVAL=0.5
+
+# Log retention (days). Older rows are pruned by the retention worker.
+IDS_LOG_RETENTION_DAYS=7
+
+# Training-sample collection (used by the retrainer).
+IDS_TRAINING_ENABLED=true
+# Fraction of "safe" events to keep as training samples (0.0 - 1.0).
+IDS_TRAINING_SAFE_SAMPLE_RATE=0.02
+
+# Threat-intel cache TTL (seconds) in the persistence layer.
+IDS_TI_CACHE_TTL=3600
+
+# =============================================================================
+# Telemetry (sensor → web UI)
+# =============================================================================
+# Endpoint the sensor pushes stats to. Must point at the Web UI.
+# If WEB_UI_SSL=true, use https://localhost:5000/ids
+API_URL=https://localhost:5000/ids
+
+# Shared secret authenticating /ids/update. Must be identical on both sides
+# (ids_engine.py and uni-srver.py read it from the same .env).
+IDS_SENSOR_TOKEN=<generate-with-secrets.token_urlsafe(32)>
+
+# Verify TLS certificates on the telemetry POST. Set to "false" when the
+# Web UI uses the ad-hoc self-signed certificate.
+IDS_TLS_VERIFY=false
+
+# Seconds between telemetry pushes.
+SEND_INTERVAL=5
+
+# Startup delay + max wait for the Web UI to come up before giving up.
+SENDER_STARTUP_DELAY=3
+SENDER_MAX_WAIT=45
+
+# =============================================================================
+# TLS interception (SSL decryption) — optional
+# =============================================================================
+# NGFW-style HTTPS decryption via mitmproxy. Requires the `ssl` extra:
+#     pip install -e ".[ssl]"
+#
+# Enabling this intercepts and terminates TLS. Only enable on networks you
+# own or have explicit written authorization to monitor.
+SSL_DECRYPTION_ENABLED=false
+
+# Port the interceptor listens on. iptables redirects TCP/443 here.
+SSL_INTERCEPT_PORT=8443
+
+# Bind address for the interceptor.
+SSL_INTERCEPT_HOST=0.0.0.0
+
+# =============================================================================
+# Threat Intelligence
+# =============================================================================
+# AbuseIPDB — https://www.abuseipdb.com/account/api
+REPUTATION_KEY=<abuseipdb-api-key>
+ABUSEIPDB_URL=https://api.abuseipdb.com/api/v2/check
+
+# VirusTotal — https://www.virustotal.com/gui/my-apikey
+VT_KEY=<virustotal-api-key>
+VIRUSTOTAL_URL=https://www.virustotal.com/api/v3/urls
+
+# ip-api.com — free tier, no key. HTTP-only. Disable on untrusted networks.
+IPAPI_ENABLED=true
+
+# Local IP blocklist (one IP per line, # for comments).
+TI_BLOCKLIST_PATH=config/blocklist_ips.txt
+
+# In-memory reputation cache TTL.
+TI_CACHE_TTL_SECONDS=3600
+
+# Only run full TI lookups when the fused score crosses these.
 TI_MIN_SCORE_FOR_LOOKUP=0.25
 TI_FULL_ENRICH_SCORE=0.45
 
-LOG_PAYLOADS=false
-IDS_PERSIST_SAFE_LOGS=false
+# =============================================================================
+# Zeek correlation — optional
+# =============================================================================
+# Enable Zeek enrichment by pointing at a Zeek log directory or a specific
+# conn.log. Leave unset to disable the feature entirely.
+#ZEEK_LOG=/opt/zeek/logs/current/conn.log
+#ZEEK_LOG_DIR=/opt/zeek/logs/current
+#ZEEK_NOTICE_LOG=/opt/zeek/logs/current/notice.log
+#ZEEK_WEIRD_LOG=/opt/zeek/logs/current/weird.log
 
-IDS_PRESSURE_SAMPLE_AT=0.80
-IDS_DROP_LOG_INTERVAL=5
-SENDER_STARTUP_DELAY=3
+# Zeek log polling interval (seconds) and per-IP cache TTL.
+ZEEK_UPDATE_INTERVAL_SEC=5
+ZEEK_CACHE_TTL_SECONDS=30
+ZEEK_CACHE_IDLE_SEC=3600
 
-# IDS Sensor → Server API Telemetry
-API_URL=https://localhost:5000/ids
-# Required: shared secret that authenticates the sensor to the Web UI's
-# /ids/update endpoint (sent as the X-IDS-TOKEN header). Both uni-srver.py
-# and ids_engine.py read this from the same .env, so one value here covers
-# both sides. Without it, /ids/update rejects every request. Generate one
-# with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-IDS_SENSOR_TOKEN=<random-shared-secret>
-SEND_INTERVAL=5
-IDS_STATS_PERSIST_INTERVAL=2
-IDS_DB_BATCH_SIZE=50
-IDS_PORT_SCAN_THRESHOLD=25
-IDS_SUSPICIOUS_THRESHOLD=0.52
-IDS_DANGEROUS_THRESHOLD=0.78
-IDS_LOG_JSON=false
-IDS_DEBUG=false
+# =============================================================================
+# Email burst alerts — optional
+# =============================================================================
+# Fires when a single source IP exceeds N dangerous events within a rolling
+# window. Requires SMTP_* to be configured.
+IDS_BURST_ALERT_WINDOW_SEC=1200
+IDS_BURST_ALERT_MIN_EVENTS=10
+IDS_BURST_ALERT_DEDUP_SEC=600
 
-# Zeek Log Correlation (optional)
-ZEEK_LOG=/opt/zeek/logs/current/conn.log
-ZEEK_LOG_DIR=/opt/zeek/logs/current
+# =============================================================================
+# Runtime feature flags
+# =============================================================================
+# When running main.py (the supervisor), leave this false — the supervisor
+# starts the sensor itself. Set to true only when running uni-srver.py
+# standalone and you want the Web UI to spawn a sensor subprocess.
+WEBUI_START_IDS_SENSOR=false
 
-# Threat Intelligence / External APIs
-REPUTATION_KEY=<AbuseIPDB_API_Key>
-VT_KEY=<Virustotal_API_Key>
-ABUSEIPDB_URL=https://api.abuseipdb.com/api/v2/check
-VIRUSTOTAL_URL=https://www.virustotal.com/api/v3/urls
-IPAPI_ENABLED=true
-TI_BLOCKLIST_PATH=config/blocklist_ips.txt
+# Auto-restart the IDS engine when it exits unexpectedly.
+# Off by default; the dashboard shows OFFLINE until you restart manually.
+IDS_AUTO_RESTART=false
+IDS_RESTART_COOLDOWN_SEC=30
 
-# Runtime Feature Flags
-WEBUI_START_IDS_SENSOR=true
-WEB_UI_SSL=true
-SENDER_MAX_WAIT=45
-IDS_TLS_VERIFY=false
+# Skip the database bootstrap at startup (already-initialized deployments).
+#IDS_SKIP_DB_BOOTSTRAP=false

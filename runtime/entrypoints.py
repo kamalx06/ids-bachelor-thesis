@@ -47,3 +47,11 @@ def run_retrain() -> None:
     from ai.retrainer import main
 
     raise SystemExit(main())
+
+
+def run_ssl_engine() -> None:
+    """Start the SSL interception engine (mitmproxy) standalone."""
+    _ensure_project_root_on_path()
+    from ssl_inspect.engine import run_forever
+
+    raise SystemExit(run_forever())

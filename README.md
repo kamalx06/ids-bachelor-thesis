@@ -1,12 +1,12 @@
 # Enterprise AI IDS
 
-An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, and threat-intelligence enrichment. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
+An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, and a threat-analytics layer for recurring-pattern detection. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-lightgrey)](#license)
 
 **Author:** Kamal Khalilov  
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **Repository:** [github.com/kamalx06/ids-bachelor-thesis](https://github.com/kamalx06/ids-bachelor-thesis)
 
 ---
@@ -18,6 +18,8 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Machine Learning](#machine-learning)
+- [TLS Interception (SSL Decryption)](#tls-interception-ssl-decryption)
+- [Threat Analytics](#threat-analytics)
 - [Web Dashboard](#web-dashboard)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
@@ -35,12 +37,14 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - **Behavioral detection** — Port scans, floods, DNS tunneling, HTTP payload inspection, and per-source rate anomalies.
 - **Threat intelligence** — AbuseIPDB, VirusTotal, ip-api metadata, and a local IP blocklist (`config/blocklist_ips.txt`) with a MySQL-backed TTL cache.
 - **Zeek correlation** *(optional)* — Enrichment from Zeek `conn.log`, `notice.log`, and `weird.log` with rotation-tolerant tail reads.
+- **TLS interception** *(optional)* — NGFW-style HTTPS decryption via mitmproxy, with a web-UI-managed root CA, per-SNI bypass rules, and full reuse of the existing analysis pipeline on decrypted payloads.
+- **Threat analytics** — Aggregated views of recurring attackers, periodic attack patterns, and day-of-week × hour-of-day heatmaps, backed by an hourly aggregation worker.
 - **Web dashboard** — Live statistics, log search with advanced filters, traffic charts, and Server-Sent Events (SSE) updates.
 - **Alerts** — Rate-limited email notifications for high-risk bursts, deduplicated per source IP.
 - **Secure authentication** — Argon2 password hashing, TOTP, email OTP, role-based access control, and admin user management.
 - **Persistence** — MySQL 8+ for logs and statistics; SQLite for local ML training samples.
 - **Observability** — Prometheus metrics at `/metrics` and structured IDS health endpoints.
-- **Resilient architecture** — IDS engine and web UI run as separate OS processes; a sensor crash does not take down the dashboard.
+- **Resilient architecture** — IDS engine, web UI, and SSL interceptor run as separate OS processes; a sensor crash does not take down the dashboard.
 
 ---
 
@@ -51,13 +55,17 @@ flowchart TB
     subgraph supervisor["main.py (Process Supervisor)"]
         WEB["uni-srver.py<br/>Flask Web UI"]
         IDS["ids_engine.py<br/>IDS Sensor"]
+        SSL["ssl_inspect/engine.py<br/>TLS Interceptor (optional)"]
     end
 
     PCAP["Network traffic<br/>(Scapy)"] --> IDS
+    HTTPS["HTTPS traffic<br/>(iptables redirect)"] --> SSL
+    SSL --> ANALYZE["analyze_packet()<br/>(shared pipeline)"]
     IDS --> ML["AI Classifier<br/>(RF + Isolation Forest)"]
     IDS --> BEH["Behavior & Payload<br/>Analysis"]
     IDS --> TI["Threat Intelligence<br/>(AbuseIPDB, VT, blocklist)"]
     IDS --> MYSQL[(MySQL)]
+    SSL --> MYSQL
     IDS -->|"Telemetry API"| WEB
     WEB --> DASH["Dashboard / Admin UI"]
     WEB --> SSE["SSE live updates"]
@@ -66,19 +74,21 @@ flowchart TB
 
     style supervisor fill:#0f172a,stroke:#334155,color:#e2e8f0
     style PCAP fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style HTTPS fill:#1e293b,stroke:#334155,color:#e2e8f0
     style MYSQL fill:#1e293b,stroke:#334155,color:#e2e8f0
 ```
 
 | Component | Role |
 |-----------|------|
-| `main.py` | Bootstraps the database and supervises both processes |
+| `main.py` | Bootstraps the database and supervises all child processes |
 | `ids_engine.py` | Packet capture, AI analysis, persistence, telemetry sender |
 | `uni-srver.py` | Flask web UI, authentication, dashboard APIs |
+| `ssl_inspect/` | Optional TLS interception engine (mitmproxy addon + CA management) |
 | `ai/` | ML training, inference, and model retraining |
 | `engine/` | Sniffer, flow manager, HTTP/DNS/payload parsers |
 | `ids/` | Packet queues, workers, metrics, AI analysis orchestration |
 | `intelligence/` | Reputation lookups, Zeek integration, sensor heartbeat |
-| `storage/` | MySQL/SQLite persistence, ORM models, migrations |
+| `storage/` | MySQL/SQLite persistence, ORM models, migrations, analytics aggregation |
 | `alerts/` | Email alerting for high-risk bursts |
 | `api_client/` | IDS → web UI telemetry over HTTP(S) |
 
@@ -115,6 +125,16 @@ sudo python main.py         # or: sudo setcap cap_net_raw,cap_net_admin=eip $(re
 Open the dashboard at **https://localhost:5000**.
 
 > A self-signed TLS certificate is generated automatically for the development environment.
+
+### Optional extras
+
+```bash
+# TLS interception support (adds mitmproxy)
+pip install -e ".[ssl]"
+
+# Development tools
+pip install -e ".[dev]"
+```
 
 ---
 
@@ -191,6 +211,16 @@ Optional throughput tuning. Copy values into `.env` or edit `config/ids-performa
 | `ZEEK_LOG` / `ZEEK_LOG_DIR` | Optional Zeek log paths for correlation |
 | `ZEEK_NOTICE_LOG` / `ZEEK_WEIRD_LOG` | Optional explicit notice/weird log paths |
 
+### TLS Interception *(optional)*
+
+Requires the `ssl` extra: `pip install -e ".[ssl]"`.
+
+| Variable | Description |
+|----------|-------------|
+| `SSL_DECRYPTION_ENABLED` | `true` to start the TLS interceptor alongside the IDS engine (default: `false`) |
+| `SSL_INTERCEPT_PORT` | TCP port the interceptor listens on (default: `8443`) |
+| `SSL_INTERCEPT_HOST` | Bind address (default: `0.0.0.0`) |
+
 See `env-example` for the full list of tunables.
 
 ---
@@ -201,14 +231,14 @@ Models are trained on [CIC IDS 2017](https://www.unb.ca/cic/datasets/ids-2017.ht
 
 ### Pipeline
 
-There are two training paths, and both share the same feature extractor (`ai/cic_features.py`):
+Two training paths share the same feature extractor (`ai/cic_features.py`):
 
 | Path | Script | Purpose |
 |------|--------|---------|
 | **Bootstrap** | `ai/train_ids_models.py` | Initial training from the CIC IDS CSV. Runs automatically at startup if models are missing. |
 | **Retrain** | `ai/retrainer.py` / `retrain_model.py` | Retrain from live-collected samples in the `training_data` table. |
 
-The retrainer runs in **full-retrain mode by default**: each cycle reads all accumulated rows from `training_data` and refits the RandomForest from scratch. This keeps the model's behavior monotonic — as the dataset grows, quality improves. Pass `--incremental` to instead extend the existing forest with new trees (faster on very large datasets, but old trees never see new data).
+The retrainer runs in **full-retrain mode by default**: each cycle reads all accumulated rows from `training_data` and refits the RandomForest from scratch, keeping model quality monotonic with dataset growth. Pass `--incremental` to instead extend the existing forest with new trees (faster on very large datasets, but old trees never see new data).
 
 ### Artifacts
 
@@ -220,8 +250,6 @@ Written to `ai/models/`:
 - `feature_names.pkl` — Feature column order
 
 ### Labels
-
-Classification labels exposed to the dashboard:
 
 - **safe** — Normal traffic
 - **suspicious** — Elevated risk score or weak signals
@@ -245,6 +273,119 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 
 ---
 
+## TLS Interception (SSL Decryption)
+
+Optional NGFW-style HTTPS decryption. When enabled, TCP/443 traffic is
+redirected into a mitmproxy process that terminates TLS, extracts the
+plaintext HTTP request, and feeds it through the **same** `analyze_packet()`
+pipeline the Scapy sensor uses. Decrypted payloads go through the payload
+analyzer, HTTP content checks, and threat-intel lookups; ML classification
+is skipped because mitmproxy does not expose the flow-level features the
+RandomForest was trained on.
+
+### How it works
+
+1. Enable the feature and install the root CA on the clients you want to inspect.
+2. `iptables` redirects inbound TCP/443 into the interceptor (port `8443` by default).
+3. mitmproxy presents a per-SNI leaf certificate signed by your root CA.
+4. The decrypted request is converted into a packet-shaped dict and passed to `analyze_packet()`.
+5. Results are persisted exactly like live sensor events — visible in `/ids/logs`, on the dashboard, and in the analytics aggregation.
+
+### Enabling it
+
+```bash
+# 1. Install the mitmproxy dependency
+pip install -e ".[ssl]"
+
+# 2. Add the new tables and seed bypass rules
+python bootstrap_db.py
+
+# 3. Generate the root CA
+python -c "from ssl_inspect.ca import ensure_ca; ensure_ca()"
+
+# 4. Enable in .env
+echo 'SSL_DECRYPTION_ENABLED=true' >> .env
+
+# 5. Redirect TCP/443 to the interceptor (as root)
+sudo python -m ssl_inspect.iptables install
+
+# 6. Restart the stack
+sudo python main.py
+```
+
+The web UI at `/ssl` (admin only) lets you:
+
+- Download the root CA (PEM) for client installation.
+- Regenerate the CA (destructive — every client must re-install).
+- Add, list, and delete SNI / IP / CIDR bypass rules.
+
+### Bypass rules
+
+A conservative bypass list is seeded on first bootstrap, covering
+certificate-pinned services (Apple, Google GMS, Mozilla updates, Windows
+Update). Add your own at `/ssl`.
+
+Bypass matching:
+
+- `sni` — glob pattern, e.g. `*.example.com`
+- `ip` — exact IP match
+- `cidr` — network, e.g. `10.0.0.0/8`
+
+### Limitations
+
+- **No ML on decrypted flows.** mitmproxy gives HTTP metadata, not TCP-level flow features. The RandomForest is out of distribution on synthesized features, so the interceptor runs the non-ML detectors only. A `ml_skipped_no_features` reason is attached to every such event.
+- **Certificate pinning breaks apps.** Mobile SDKs and some APIs refuse any cert that is not signed by the original issuer. The bypass list mitigates this but is not a cure.
+- **Performance.** mitmproxy adds ~5–15% latency per connection and runs on a single event loop. Suitable for a lab or small-office deployment, not for high-throughput production.
+- **Legal exposure.** MITM on networks you do not own is illegal in most jurisdictions. The `/ssl` page shows a warning — treat it as a real one.
+
+> **Package naming:** the TLS interception code lives in `ssl_inspect/`, **not** `ssl/`. A top-level package named `ssl` would shadow the Python standard library module and break `requests`, `urllib3`, and mitmproxy on import. Do not rename it back.
+
+---
+
+## Threat Analytics
+
+The `/analytics` page surfaces recurring patterns from historical traffic.
+
+### How it works
+
+A background worker (`storage/analytics.py`) runs every hour in the web UI
+process and rewrites the `threat_patterns` table from `packet_logs`,
+bucketed four ways:
+
+| Bucket | Retained for | Purpose |
+|--------|--------------|---------|
+| `hourly` | 14 days | Day-of-week × hour-of-day heatmap |
+| `daily` | 180 days | Recurring actor detection, "distinct days active" |
+| `weekly` | 3 years | Weekly totals, trend line |
+| `monthly` | 10 years | Long-run posture |
+
+Aggregation is idempotent: each run deletes its lookback window and rewrites
+it, so running it twice produces identical output.
+
+### What the page shows
+
+- **Weekly totals** — dangerous vs. suspicious per week, stacked bar.
+- **Recurring patterns** — cards for actors (IPs or hosts) whose events
+  cluster on a single day-of-week. Example: *"1.2.3.4 attacks on Fridays,
+  8 weeks running, avg 14 events/week."*
+- **Weekly heatmap** — 7×24 grid of dangerous event counts by weekday and hour.
+- **Recurring attackers** — table of source IPs seen on 3+ distinct days.
+- **Recurring hosts** — same for HTTP hosts / domains.
+- **Top threat categories** — ranked reason tokens (`http_SQLi`, `payload_XSS`, etc.).
+
+### Backfill
+
+The hourly worker only fills forward. To populate the page from existing
+`packet_logs` on first install:
+
+```bash
+python -m storage.analytics --backfill --days 30
+```
+
+Run once after deployment. Not on a schedule.
+
+---
+
 ## Web Dashboard
 
 | Route | Description |
@@ -252,17 +393,22 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 | `/` | Landing / redirect |
 | `/login` | Authentication (password + optional MFA) |
 | `/dashboard` | Main SOC dashboard (requires login) |
+| `/analytics` | Threat analytics (recurring actors, heatmap, patterns) |
 | `/admin` | User management (admin role) |
 | `/settings` | Profile, MFA, password |
+| `/ssl` | TLS interception management (admin only) |
 | `/ids/health` | IDS sensor health check |
 | `/ids/stats` | Live statistics (JSON) |
 | `/ids/logs` | Paginated log query (JSON) |
 | `/ids/search` | Advanced log search (JSON) |
 | `/ids/stream` | SSE live event stream |
 | `/ids/update` | Sensor telemetry ingest (token-protected) |
+| `/analytics/api/*` | Analytics query endpoints |
+| `/ssl/api/*` | SSL management endpoints |
 | `/metrics` | Prometheus metrics (loopback-only by default; extend `ALLOWED_IPS` in `uni-srver.py` for remote scrapers) |
 
-The dashboard shows real-time log counts, traffic time series, top source IPs, per-domain activity, and classification breakdowns. When the IDS engine is offline, the UI reflects an **OFFLINE** sensor state while remaining accessible.
+When the IDS engine is offline, the UI reflects an **OFFLINE** sensor state
+while remaining accessible.
 
 ---
 
@@ -272,7 +418,7 @@ The dashboard shows real-time log counts, traffic time series, top source IPs, p
 ids-bachelor-thesis/
 ├── main.py                 # Process supervisor entry point
 ├── ids_engine.py           # IDS sensor process (capture, AI, persistence)
-├── uni-srver.py            # Flask web server (note: this is the actual filename)
+├── uni-srver.py            # Flask web server (note: hyphenated filename)
 ├── bootstrap_db.py         # Database initialization (schema + seed)
 ├── merge_cic_ids.py        # Merge CIC IDS 2017 CSVs into ai/data/cic_ids.csv
 ├── retrain_model.py        # Model retraining CLI wrapper
@@ -281,7 +427,7 @@ ids-bachelor-thesis/
 ├── env-example
 ├── ai/                     # ML training, inference, CIC features
 │   ├── models/             # Trained .pkl artifacts (gitignored)
-│   ├── data/               # cic_ids.csv (gitignored — see Installation)
+│   ├── data/               # cic_ids.csv (gitignored)
 │   ├── classifier.py       # Live inference
 │   ├── retrainer.py        # Retraining pipeline
 │   └── train_ids_models.py # Bootstrap training
@@ -292,9 +438,16 @@ ids-bachelor-thesis/
 ├── ids/                    # Queues, workers, metrics, AI orchestration
 ├── intelligence/           # TI, Zeek, sensor process management
 ├── runtime/                # Entry points and process supervisor
+├── ssl_inspect/            # Optional TLS interception (mitmproxy)
+│   ├── ca.py               # Root CA generation and metadata
+│   ├── bypass.py           # Per-SNI / per-IP bypass rules
+│   ├── interceptor.py      # mitmproxy addon — feeds decrypted flows
+│   ├── engine.py           # Standalone SSL process launcher
+│   └── iptables.py         # Redirect helper (install / remove)
 ├── static/                 # CSS and JavaScript assets
 ├── storage/                # DB layer, ORM models, persistence
-└── templates/              # HTML templates (login, dashboard, admin, settings)
+│   └── analytics.py        # Threat pattern aggregation + query functions
+└── templates/              # HTML templates (login, dashboard, admin, settings, analytics, ssl)
 ```
 
 ---
@@ -306,7 +459,7 @@ ids-bachelor-thesis/
 - **Python 3.10–3.13**
 - **MySQL Server 8.0+**
 - **Linux** (recommended) for packet capture — requires root or `CAP_NET_RAW` / `CAP_NET_ADMIN`
-- **Optional:** Zeek, ClamAV (`clamd`), AbuseIPDB and VirusTotal API keys
+- **Optional:** Zeek, ClamAV (`clamd`), AbuseIPDB and VirusTotal API keys, mitmproxy (for TLS interception)
 
 ### 1. Prepare the test environment
 
@@ -406,6 +559,9 @@ Optionally install as an editable package to expose the `ai-ids*` console script
 
 ```bash
 pip install -e .
+
+# If you plan to use TLS interception, include the `ssl` extra:
+pip install -e ".[ssl]"
 ```
 
 ### 5. Configure the environment
@@ -453,6 +609,12 @@ python3.13 bootstrap_db.py
 
 If `IDS_BOOTSTRAP_ADMIN_USER` and `IDS_BOOTSTRAP_ADMIN_PASSWORD` are set in `.env`, an administrator account is created automatically on first bootstrap (only when the `users` table is empty).
 
+Optionally backfill the analytics table from existing logs:
+
+```bash
+python3.13 -m storage.analytics --backfill --days 30
+```
+
 ### 8. Run the application
 
 With packet capture capabilities granted:
@@ -477,9 +639,10 @@ Open the dashboard at **https://localhost:5000**.
 
 | Command | Description |
 |---------|-------------|
-| `python main.py` | **Recommended** — supervisor runs Web UI + IDS engine |
+| `python main.py` | **Recommended** — supervisor runs Web UI + IDS engine (+ SSL interceptor if enabled) |
 | `python ids_engine.py` | IDS sensor only (capture, AI, persistence) |
 | `python uni-srver.py` | Web UI only |
+| `python -m ssl_inspect.engine` | TLS interceptor only |
 | `python bootstrap_db.py` | Database setup only |
 | `python retrain_model.py` | Retrain ML models from collected samples |
 
@@ -492,6 +655,7 @@ After `pip install -e .`, console scripts are also available:
 | `ai-ids-engine` | `python ids_engine.py` |
 | `ai-ids-bootstrap-db` | `python bootstrap_db.py` |
 | `ai-ids-retrain` | `python retrain_model.py` |
+| `ai-ids-ssl-engine` | `python -m ssl_inspect.engine` |
 
 > **Note:** Packet capture typically requires elevated privileges on Linux:
 > `sudo python ids_engine.py` or `sudo ai-ids-engine`
@@ -513,6 +677,8 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 - **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs bypass limits by default; extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
 - **`/metrics` is loopback-only by default.** If you scrape Prometheus from another host, add its IP to `ALLOWED_IPS`, or place a proxy in front that filters the endpoint.
 - **`ip-api.com` free tier is HTTP-only** and can be MITM'd. It contributes only a small weight to final scores; disable with `IPAPI_ENABLED=false` on untrusted networks.
+- **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/mitm-conf/mitmproxy-ca.pem` (chmod 600) and never commit it to source control.
+- **The root CA private key is stored on disk, not in MySQL.** A DB dump alone does not compromise the CA; it only exposes public metadata for the `/ssl` page.
 
 ---
 
@@ -559,6 +725,38 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
 - Check `logs/*.log` for `Email alert failed` messages.
 - Alerting is rate-limited per source IP. Repeated alerts for the same IP are suppressed for `IDS_BURST_ALERT_DEDUP_SEC` (default 10 minutes).
 
+### Analytics page is empty
+
+- The hourly aggregation worker may not have run yet. Trigger it manually:
+  ```bash
+  python -m storage.analytics --backfill --days 30
+  ```
+- Confirm the `threat_patterns` table has rows:
+  ```bash
+  mysql -u test_user -p ids_db_test -e "SELECT bucket_type, COUNT(*) FROM threat_patterns GROUP BY bucket_type;"
+  ```
+
+### SSL interceptor not starting
+
+- Confirm `SSL_DECRYPTION_ENABLED=true` in `.env`.
+- Confirm mitmproxy is installed: `python -c "import mitmproxy; print(mitmproxy.__version__)"`.
+- Check that port `8443` is free: `ss -tlnp | grep 8443`.
+- Look for `SSL interceptor exited` in `logs/*.log`.
+
+### HTTPS sites show certificate warnings after enabling decryption
+
+- The client has not installed the root CA. Download it from `/ssl` and install it on each client.
+- See the `/ssl` page for platform-specific install commands.
+
+### SSL decryption interferes with an app
+
+- The app uses certificate pinning. Add its SNI to the bypass list at `/ssl`.
+- Common pinned services: Apple, Google GMS, banking apps, some mobile SDKs.
+
+### `AttributeError: module 'ssl' has no attribute ...`
+
+- The project has a top-level `ssl/` package that shadows the stdlib. Rename it to `ssl_inspect/` (see the maintainer note in [TLS Interception](#tls-interception-ssl-decryption)). This is a known Python footgun.
+
 ---
 
 ## License
@@ -575,3 +773,4 @@ Proprietary — © Kamal Khalilov. See the repository for terms.
 - [Flask](https://flask.palletsprojects.com/) — web framework
 - [Chart.js](https://www.chartjs.org/) — dashboard charts
 - [Zeek](https://zeek.org/) — optional network analysis
+- [mitmproxy](https://mitmproxy.org/) — TLS interception engine
