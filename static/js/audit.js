@@ -28,7 +28,10 @@ function fmtTs(ts) {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
-let currentCursor = null;
+// Cursor stack: index 0 is the first page (null cursor).
+// Advancing pushes onto the stack; going back pops.
+let cursorStack = [null];
+let cursorIndex = 0;
 let lastRows = [];
 
 function renderTable(rows) {
@@ -87,22 +90,47 @@ function renderPager(meta) {
   host.innerHTML = "";
   const next = meta && meta.next_cursor;
 
-  const prev = document.createElement("button");
-  prev.type = "button"; prev.className = "secondary";
-  prev.textContent = "First page"; prev.style.width = "auto";
-  prev.addEventListener("click", () => { currentCursor = null; loadEntries(); });
+  const info = document.createElement("span");
+  info.textContent = `Page ${cursorIndex + 1}`;
+  info.style.marginRight = "12px";
+
+  const back = document.createElement("button");
+  back.type = "button"; back.className = "secondary";
+  back.textContent = "Previous"; back.style.width = "auto";
+  back.style.marginRight = "8px";
+  back.disabled = cursorIndex === 0;
+  back.addEventListener("click", () => {
+    if (cursorIndex === 0) return;
+    cursorIndex = Math.max(0, cursorIndex - 1);
+    loadEntries();
+  });
+
+  const first = document.createElement("button");
+  first.type = "button"; first.className = "secondary";
+  first.textContent = "First page"; first.style.width = "auto";
+  first.style.marginRight = "8px";
+  first.disabled = cursorIndex === 0;
+  first.addEventListener("click", () => {
+    cursorStack = [null];
+    cursorIndex = 0;
+    loadEntries();
+  });
 
   const nxt = document.createElement("button");
   nxt.type = "button"; nxt.className = "secondary";
   nxt.textContent = "Next"; nxt.style.width = "auto";
-  nxt.style.marginLeft = "8px";
   nxt.disabled = !next;
   nxt.addEventListener("click", () => {
-    currentCursor = next;
+    // Trim any forward cursors so a fresh "next" doesn't leave stale entries.
+    cursorStack = cursorStack.slice(0, cursorIndex + 1);
+    cursorStack.push(next);
+    cursorIndex += 1;
     loadEntries();
   });
 
-  host.appendChild(prev);
+  host.appendChild(info);
+  host.appendChild(back);
+  host.appendChild(first);
   host.appendChild(nxt);
 }
 
@@ -134,9 +162,10 @@ async function loadEntries() {
       outcome: el("auditFilterOutcome")?.value || "",
       limit: 100,
     };
-    if (currentCursor) {
-      params.before_ts = currentCursor.before_ts;
-      params.before_id = currentCursor.before_id;
+    const cursor = cursorStack[cursorIndex];
+    if (cursor) {
+      params.before_ts = cursor.before_ts;
+      params.before_id = cursor.before_id;
     }
     const res = await apiGet("/audit/api/entries", params);
     renderTable(res.data || []);
@@ -164,12 +193,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Escape" && modal?.classList.contains("open")) closeModal();
   });
 
-  el("auditApplyBtn")?.addEventListener("click", () => { currentCursor = null; loadEntries(); });
+  el("auditApplyBtn")?.addEventListener("click", () => {
+    cursorStack = [null];
+    cursorIndex = 0;
+    loadEntries();
+  });
   el("auditResetBtn")?.addEventListener("click", () => {
     el("auditFilterAction").value = "";
     el("auditFilterActor").value = "";
     el("auditFilterOutcome").value = "";
-    currentCursor = null;
+    cursorStack = [null];
+    cursorIndex = 0;
     loadEntries();
   });
 

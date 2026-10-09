@@ -1,10 +1,11 @@
 """
 Root CA generation and metadata management.
 
-The CA private key is written to ssl/mitm-conf/mitmproxy-ca.pem — the
-file mitmproxy natively reads. We do NOT store the private key in MySQL;
-the DB only holds public metadata for display in the web UI. If an
-attacker dumps the DB, they get nothing that can forge certs.
+The CA private key is written to ssl_inspect/mitm-conf/mitmproxy-ca.pem
+— the file mitmproxy natively reads. The private key is never persisted
+in MySQL; the database holds only public metadata (common name, serial,
+validity window, SHA-256 fingerprint) for display in the web UI. A
+database dump alone therefore cannot be used to forge certificates.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONF_DIR = REPO_ROOT / "ssl" / "mitm-conf"
+CONF_DIR = REPO_ROOT / "ssl_inspect" / "mitm-conf"
 CA_COMBINED_PATH = CONF_DIR / "mitmproxy-ca.pem"        # key + cert, mitmproxy reads this
 CA_CERT_PATH = CONF_DIR / "mitmproxy-ca-cert.pem"        # public cert, for client install
 
@@ -116,8 +117,13 @@ def _sync_metadata(cert: x509.Certificate) -> None:
         cn_attr = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         cn = cn_attr[0].value if cn_attr else DEFAULT_CN
         fp = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
-        not_before = cert.not_valid_before_utc
-        not_after = cert.not_valid_after_utc
+        # .not_valid_before_utc / .not_valid_after_utc were added in
+        # cryptography 42.0. The naive accessors (.not_valid_before /
+        # .not_valid_after) are deprecated in the same release but still
+        # present as of cryptography 44.x, so this fallback keeps the
+        # code working on both older and newer installs.
+        not_before = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
+        not_after = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
 
         session = get_session()
         try:

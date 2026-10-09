@@ -1,9 +1,15 @@
 """
 Install / remove the iptables redirect that pushes TCP/443 through the
-interceptor. Run as root:
+TLS interceptor. Must be run as root.
 
-    sudo python -m ssl.iptables install
-    sudo python -m ssl.iptables remove
+    sudo python -m ssl_inspect.iptables install
+    sudo python -m ssl_inspect.iptables remove
+    sudo python -m ssl_inspect.iptables status
+
+The install action is idempotent: it checks for the rule first and
+reports "already present" rather than appending a duplicate. --wait is
+passed to every invocation to avoid colliding with concurrent iptables
+operations from a host firewall daemon.
 """
 
 from __future__ import annotations
@@ -15,34 +21,61 @@ import sys
 
 LISTEN_PORT = int(os.getenv("SSL_INTERCEPT_PORT", "8443") or "8443")
 
+# The exact rule specification. Kept as one tuple so install/remove/status
+# all agree on the same match criteria.
+_RULE = [
+    "-p", "tcp", "--dport", "443",
+    "-j", "REDIRECT", "--to-port", str(LISTEN_PORT),
+]
+
+
+def _iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["iptables", "--wait", *args],
+        check=check,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _rule_present() -> bool:
+    """Return True if the redirect rule already exists in the NAT table."""
+    result = _iptables("-t", "nat", "-C", "PREROUTING", *_RULE, check=False)
+    return result.returncode == 0
+
 
 def install() -> None:
-    subprocess.run([
-        "iptables", "-t", "nat", "-A", "PREROUTING",
-        "-p", "tcp", "--dport", "443",
-        "-j", "REDIRECT", "--to-port", str(LISTEN_PORT),
-    ], check=True)
+    if _rule_present():
+        print(f"[OK] Redirect already present (TCP/443 → {LISTEN_PORT}); nothing to do.")
+        return
+    _iptables("-t", "nat", "-A", "PREROUTING", *_RULE)
     print(f"[OK] Redirected TCP/443 → {LISTEN_PORT}")
-    print("Hint: exclude the IDS host itself with")
+    print("Hint: exclude the IDS host itself from interception with")
     print(f"      iptables -t nat -I PREROUTING 1 -s <IDS_IP> -j RETURN")
 
 
 def remove() -> None:
-    subprocess.run([
-        "iptables", "-t", "nat", "-D", "PREROUTING",
-        "-p", "tcp", "--dport", "443",
-        "-j", "REDIRECT", "--to-port", str(LISTEN_PORT),
-    ], check=True)
+    if not _rule_present():
+        print("[OK] No redirect rule to remove.")
+        return
+    _iptables("-t", "nat", "-D", "PREROUTING", *_RULE)
     print("[OK] Removed redirect rule")
+
+
+def status() -> None:
+    if _rule_present():
+        print(f"[ACTIVE] TCP/443 is redirected to port {LISTEN_PORT}")
+    else:
+        print("[INACTIVE] No redirect rule present")
 
 
 if __name__ == "__main__":
     if sys.platform != "linux":
-        print("SSL interception is Linux-only.", file=sys.stderr)
+        print("TLS interception is Linux-only.", file=sys.stderr)
         sys.exit(1)
 
-    p = argparse.ArgumentParser()
-    p.add_argument("action", choices=("install", "remove"))
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Manage the TLS interceptor iptables redirect")
+    parser.add_argument("action", choices=("install", "remove", "status"))
+    args = parser.parse_args()
 
-    (install if args.action == "install" else remove)()
+    {"install": install, "remove": remove, "status": status}[args.action]()

@@ -23,7 +23,7 @@ from mitmproxy import http, tls  # noqa: E402
 from logging_config import get_logger  # noqa: E402
 from ids.ai_analysis import analyze_packet  # noqa: E402
 from storage import persistence  # noqa: E402
-from ssl import bypass  # noqa: E402
+from ssl_inspect import bypass  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -66,12 +66,28 @@ class IDSInterceptor:
         )
 
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
-        """Decide whether to skip interception for this connection."""
+        """
+        Decide whether to skip interception for this connection.
+
+        Two match types are honored: SNI glob patterns and client IP /
+        CIDR rules. The IP check reads the peer address from the
+        connection context; if it is unavailable (rare, but possible
+        with certain upstream proxies), only SNI matching applies.
+        """
         sni = (data.client_hello.sni or "").lower()
-        if bypass.should_bypass_sni(sni):
+
+        client_ip: str | None = None
+        try:
+            peername = data.context.client.peername
+            if peername:
+                client_ip = peername[0]
+        except Exception:
+            client_ip = None
+
+        if bypass.should_bypass_sni(sni) or bypass.should_bypass_ip(client_ip):
             data.ignore_connection = True
             self._bypassed += 1
-            logger.debug("SSL bypass (SNI): %s", sni)
+            logger.debug("SSL bypass: sni=%s client_ip=%s", sni, client_ip or "-")
 
     # ------------------------------------------------------------------
     # Flow emission

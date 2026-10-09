@@ -9,7 +9,7 @@ function showAlert(msg, type = "info") {
   const box = el("sslAlert");
   if (!box) return;
   box.textContent = msg || "";
-  box.className = message ? `alert ${type}` : "";
+  box.className = msg ? `alert ${type}` : "";
 }
 
 async function api(path, { method = "GET", body } = {}) {

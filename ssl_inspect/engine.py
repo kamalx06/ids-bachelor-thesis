@@ -1,9 +1,13 @@
 """
-Standalone SSL interceptor process.
+Standalone TLS interceptor process.
 
-Spawns mitmproxy in transparent mode with our addon. Started by the
-supervisor as a separate OS process (not a thread) so an interceptor
-crash cannot take down the web UI or the Scapy sensor.
+Spawns mitmproxy in transparent mode with the IDS addon. Started by the
+process supervisor as a separate OS process (not a thread) so an
+interceptor crash cannot take down the web UI or the Scapy sensor.
+
+The package is named ssl_inspect (not ssl) to avoid shadowing the Python
+standard library ssl module, which requests, urllib3, and mitmproxy all
+depend on.
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONF_DIR = REPO_ROOT / "ssl" / "mitm-conf"
-ADDON_PATH = REPO_ROOT / "ssl" / "interceptor.py"
+CONF_DIR = REPO_ROOT / "ssl_inspect" / "mitm-conf"
+ADDON_PATH = REPO_ROOT / "ssl_inspect" / "interceptor.py"
 
 LISTEN_PORT = int(os.getenv("SSL_INTERCEPT_PORT", "8443") or "8443")
 LISTEN_HOST = os.getenv("SSL_INTERCEPT_HOST", "0.0.0.0")
@@ -46,9 +50,21 @@ def build_command() -> list[str]:
 
 
 def run_forever() -> int:
+    # Fail fast with a clear message if the SSL extra isn't installed,
+    # rather than spawning mitmdump and letting it die with a subprocess
+    # traceback that buries the actual cause.
+    try:
+        import mitmproxy  # noqa: F401
+    except ImportError:
+        logger.error(
+            "mitmproxy is not installed. Install the SSL extra with "
+            "`pip install -e \".[ssl]\"` before starting the interceptor."
+        )
+        return 1
+
     CONF_DIR.mkdir(parents=True, exist_ok=True)
 
-    from ssl.ca import ensure_ca
+    from ssl_inspect.ca import ensure_ca
     ensure_ca()
 
     # Ensure the repo root is on PYTHONPATH so mitmproxy's addon loader

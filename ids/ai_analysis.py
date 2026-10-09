@@ -1,8 +1,11 @@
 """
 Hybrid AI scoring: ML + behavioral heuristics + optional TI.
 
-- ai_score: raw ML output (dashboard trend / top-IP bars)
-- risk_score: adjusted + signals, used for safe / suspicious / dangerous
+- ai_score: ML model output, scaled by 0.92 when the model is untrusted
+  (see model_is_trusted()). It is *not* always the raw predict() score.
+  Used for dashboard trend lines and top-IP bar charts.
+- risk_score: fused score — ML + behavioral heuristics + TI verdicts +
+  Zeek enrichment — used for safe / suspicious / dangerous classification.
 """
 
 from __future__ import annotations
@@ -212,7 +215,6 @@ def _ti_floor_risk(ti_ip: dict | None, ti_url: dict | None) -> float:
 def _final_risk(
     ml_score: float,
     adjusted_score: float,
-    reasons: list[str],
     ti_ip: dict | None,
     ti_url: dict | None,
     zeek: dict | None,
@@ -326,8 +328,13 @@ def analyze_packet(
     if iso_pred == -1 and detail.get("anomaly_strength", 0) >= 0.40:
         reasons.append("anomaly")
 
+    model_trusted = model_is_trusted()
     ml = float(ml_score)
-    if not model_is_trusted():
+    if features is not None and not model_trusted:
+        # Only flag the model as untrusted when the ML step actually ran.
+        # SSL-decrypted flows set features=None and never consult the
+        # classifier, so tagging them with ml_model_untrusted would suggest
+        # the model rejected them, which is not what happened.
         ml *= 0.92
         reasons.append("ml_model_untrusted")
 
@@ -350,7 +357,7 @@ def analyze_packet(
             behavior=behavior,
             queue_pressure=queue_pressure,
             skip_heavy=skip_heavy_enrichment,
-            model_trusted=model_is_trusted(),
+            model_trusted=model_trusted,
         )
         for r in ti_reasons:
             if r not in reasons:
@@ -360,7 +367,6 @@ def analyze_packet(
     fused_risk = _final_risk(
         ml,
         adjusted,
-        reasons,
         ti_ip,
         ti_url,
         zeek,

@@ -59,7 +59,7 @@ _worker_cancels: dict[str, threading.Event] = {}
 _stop_event = threading.Event()
 
 
-def _should_persist_log(classification: str, reasons: list | None = None) -> bool:
+def _should_persist_log(classification: str, reasons: list[str] | None = None) -> bool:
     if classification != "safe" or _PERSIST_SAFE_LOGS:
         return True
     # DNS-tunnel heuristics (engine.dns_behavior) routinely fire well before
@@ -323,13 +323,29 @@ def start() -> None:
     iface = os.getenv("SNIFFER_INTERFACE", "eth0")
     bpf_filter = os.getenv("SNIFFER_BPF", "ip")
     logger.info("Starting packet capture on iface=%s filter=%s", iface, bpf_filter)
-    sniff(
+
+    # Scapy's sniff() processes stop_filter only when a packet arrives, so on
+    # a silent interface SIGTERM would not be honored until the next packet.
+    # Use an AsyncSniffer and poll the stop event from the main thread so
+    # shutdown is prompt regardless of traffic. AsyncSniffer is the
+    # documented Scapy pattern for interruptible capture.
+    from scapy.sendrecv import AsyncSniffer
+
+    sniffer = AsyncSniffer(
         prn=callback,
         store=False,
         iface=iface,
         filter=bpf_filter,
-        stop_filter=lambda _pkt: _stop_event.is_set(),
     )
+    sniffer.start()
+
+    try:
+        while not _stop_event.is_set():
+            _stop_event.wait(1.0)
+    finally:
+        if sniffer.running:
+            sniffer.stop()
+        logger.info("Packet capture stopped")
 
 if __name__ == "__main__":
     import signal
