@@ -34,12 +34,30 @@ _RULE = [
 
 
 def _iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    result = subprocess.run(
         ["iptables", "--wait", *args],
-        check=check,
+        check=False,
         text=True,
         capture_output=True,
     )
+
+    if check and result.returncode != 0:
+        # iptables exit codes:
+        #   1 = parameter problem, 2 = command error, 3 = resource problem,
+        #   4 = permission denied (typically running as non-root)
+        stderr = (result.stderr or "").strip()
+        if "Permission denied" in stderr or "you must be root" in stderr:
+            print(
+                "[ERROR] iptables needs root privileges. "
+                "Re-run this command with sudo:\n"
+                f"        sudo python3.13 -m ssl_inspect.iptables {' '.join(args[:1])}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        print(f"[ERROR] iptables failed (exit {result.returncode}): {stderr}", file=sys.stderr)
+        raise SystemExit(2)
+
+    return result
 
 
 def _rule_present() -> bool:
@@ -93,5 +111,21 @@ if __name__ == "__main__":
     )
     parser.add_argument("action", choices=("install", "remove", "status"))
     args = parser.parse_args()
+
+    # Preflight: iptables needs CAP_NET_ADMIN, so run as root. Checking
+    # here gives a clear error before any partial work is attempted.
+    try:
+        if os.geteuid() != 0:
+            print(
+                "[ERROR] This command must be run as root. "
+                f"Re-run with sudo:\n"
+                f"        sudo python3.13 -m ssl_inspect.iptables {args.action}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    except AttributeError:
+        # os.geteuid() is not available on non-POSIX; the platform check
+        # above already excluded non-Linux, so this is unreachable.
+        pass
 
     {"install": install, "remove": remove, "status": status}[args.action]()
