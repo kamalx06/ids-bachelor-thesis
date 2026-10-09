@@ -80,7 +80,10 @@ class PacketQueues:
         )
 
     def dequeue_raw_packet(self, timeout: float = 1.0) -> Any | None:
-        return self.raw_queue.get(timeout=timeout)
+        try:
+            return self.raw_queue.get(timeout=timeout)
+        except Empty:
+            return None
 
     def enqueue_packet(self, item: dict) -> bool:
         try:
@@ -118,7 +121,10 @@ class PacketQueues:
             return False
 
     def dequeue_packet(self, timeout: float = 1.0) -> dict | None:
-        return self.packet_queue.get(timeout=timeout)
+        try:
+            return self.packet_queue.get(timeout=timeout)
+        except Empty:
+            return None
 
     def process_with_retry(
         self,

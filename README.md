@@ -1,12 +1,12 @@
 # Enterprise AI IDS
 
-An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, and a threat-analytics layer for recurring-pattern detection. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
+An AI-powered Intrusion Detection System with a Flask web dashboard, real-time packet analysis, hybrid machine-learning classification, threat-intelligence enrichment, optional NGFW-style TLS interception, threat analytics with recurring-pattern detection, an immutable audit trail, and MITRE ATT&CK–tagged detections. Built as a modular Python platform suitable for network security monitoring and SOC workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Proprietary-lightgrey)](#license)
 
 **Author:** Kamal Khalilov  
-**Version:** 1.1.0  
+**Version:** 1.2.0  
 **Repository:** [github.com/kamalx06/ids-bachelor-thesis](https://github.com/kamalx06/ids-bachelor-thesis)
 
 ---
@@ -20,6 +20,8 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - [Machine Learning](#machine-learning)
 - [TLS Interception (SSL Decryption)](#tls-interception-ssl-decryption)
 - [Threat Analytics](#threat-analytics)
+- [MITRE ATT&CK Mapping](#mitre-attck-mapping)
+- [Audit Log](#audit-log)
 - [Web Dashboard](#web-dashboard)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
@@ -35,10 +37,12 @@ An AI-powered Intrusion Detection System with a Flask web dashboard, real-time p
 - **Real-time packet capture** — Live traffic sniffing via Scapy with configurable BPF filters, preprocess pipelines, and sharded worker pools.
 - **Hybrid AI scoring** — Random Forest + Isolation Forest trained on CIC IDS 2017-style features, fused with behavioral heuristics, payload analysis, and threat-intel verdicts.
 - **Behavioral detection** — Port scans, floods, DNS tunneling, HTTP payload inspection, and per-source rate anomalies.
+- **MITRE ATT&CK mapping** — Every detection is tagged with one or more ATT&CK technique IDs, and the analytics page shows a per-tactic coverage matrix.
 - **Threat intelligence** — AbuseIPDB, VirusTotal, ip-api metadata, and a local IP blocklist (`config/blocklist_ips.txt`) with a MySQL-backed TTL cache.
 - **Zeek correlation** *(optional)* — Enrichment from Zeek `conn.log`, `notice.log`, and `weird.log` with rotation-tolerant tail reads.
 - **TLS interception** *(optional)* — NGFW-style HTTPS decryption via mitmproxy, with a web-UI-managed root CA, per-SNI bypass rules, and full reuse of the existing analysis pipeline on decrypted payloads.
 - **Threat analytics** — Aggregated views of recurring attackers, periodic attack patterns, and day-of-week × hour-of-day heatmaps, backed by an hourly aggregation worker.
+- **Audit log** — Immutable trail of every privileged action (logins, MFA changes, user administration, SSL management, configuration changes), queryable from an admin-only page.
 - **Web dashboard** — Live statistics, log search with advanced filters, traffic charts, and Server-Sent Events (SSE) updates.
 - **Alerts** — Rate-limited email notifications for high-risk bursts, deduplicated per source IP.
 - **Secure authentication** — Argon2 password hashing, TOTP, email OTP, role-based access control, and admin user management.
@@ -63,9 +67,12 @@ flowchart TB
     SSL --> ANALYZE["analyze_packet()<br/>(shared pipeline)"]
     IDS --> ML["AI Classifier<br/>(RF + Isolation Forest)"]
     IDS --> BEH["Behavior & Payload<br/>Analysis"]
+    IDS --> MITRE["MITRE ATT&CK<br/>Mapping"]
     IDS --> TI["Threat Intelligence<br/>(AbuseIPDB, VT, blocklist)"]
     IDS --> MYSQL[(MySQL)]
     SSL --> MYSQL
+    WEB --> AUDIT["Audit Trail<br/>(privileged actions)"]
+    AUDIT --> MYSQL
     IDS -->|"Telemetry API"| WEB
     WEB --> DASH["Dashboard / Admin UI"]
     WEB --> SSE["SSE live updates"]
@@ -81,14 +88,14 @@ flowchart TB
 | Component | Role |
 |-----------|------|
 | `main.py` | Bootstraps the database and supervises all child processes |
-| `ids_engine.py` | Packet capture, AI analysis, persistence, telemetry sender |
-| `uni-srver.py` | Flask web UI, authentication, dashboard APIs |
+| `ids_engine.py` | Packet capture, AI analysis, MITRE mapping, persistence, telemetry sender |
+| `uni-srver.py` | Flask web UI, authentication, dashboard APIs, audit API |
 | `ssl_inspect/` | Optional TLS interception engine (mitmproxy addon + CA management) |
 | `ai/` | ML training, inference, and model retraining |
 | `engine/` | Sniffer, flow manager, HTTP/DNS/payload parsers |
 | `ids/` | Packet queues, workers, metrics, AI analysis orchestration |
-| `intelligence/` | Reputation lookups, Zeek integration, sensor heartbeat |
-| `storage/` | MySQL/SQLite persistence, ORM models, migrations, analytics aggregation |
+| `intelligence/` | Reputation lookups, Zeek integration, sensor heartbeat, MITRE mapping |
+| `storage/` | MySQL/SQLite persistence, ORM models, migrations, analytics aggregation, audit trail |
 | `alerts/` | Email alerting for high-risk bursts |
 | `api_client/` | IDS → web UI telemetry over HTTP(S) |
 
@@ -220,6 +227,13 @@ Requires the `ssl` extra: `pip install -e ".[ssl]"`.
 | `SSL_DECRYPTION_ENABLED` | `true` to start the TLS interceptor alongside the IDS engine (default: `false`) |
 | `SSL_INTERCEPT_PORT` | TCP port the interceptor listens on (default: `8443`) |
 | `SSL_INTERCEPT_HOST` | Bind address (default: `0.0.0.0`) |
+
+### Audit & Retention
+
+| Variable | Description |
+|----------|-------------|
+| `IDS_LOG_RETENTION_DAYS` | Retention for `packet_logs` (default: `7`) |
+| Audit retention | Fixed at 180 days in `storage/audit.py`; edit `_AUDIT_RETENTION_DAYS` if you need a different window |
 
 See `env-example` for the full list of tunables.
 
@@ -365,6 +379,7 @@ it, so running it twice produces identical output.
 ### What the page shows
 
 - **Weekly totals** — dangerous vs. suspicious per week, stacked bar.
+- **MITRE ATT&CK coverage** — per-tactic matrix of techniques that fired in the window.
 - **Recurring patterns** — cards for actors (IPs or hosts) whose events
   cluster on a single day-of-week. Example: *"1.2.3.4 attacks on Fridays,
   8 weeks running, avg 14 events/week."*
@@ -386,6 +401,127 @@ Run once after deployment. Not on a schedule.
 
 ---
 
+## MITRE ATT&CK Mapping
+
+Every detection is mapped to one or more [MITRE ATT&CK](https://attack.mitre.org/)
+techniques so alerts speak the vocabulary your SOC already uses.
+
+### How it works
+
+The mapping is defined in `intelligence/mitre.py` as a `reason token → technique`
+dictionary. Every detection reason emitted by the analysis pipeline
+(`http_SQLi`, `port_scan`, `dns_tunnel_suspected`, `reputation_ip_malicious`,
+and so on) resolves to a technique ID, tactic, and human-readable name.
+
+At classification time:
+
+1. `analyze_packet()` collects the reason list as usual.
+2. `intelligence.mitre.classify()` resolves the reasons to a de-duplicated
+   list of techniques, capped at 12 entries per event.
+3. The list is stored in `packet_logs.mitre_json` alongside the other
+   analysis fields.
+4. The dashboard shows the technique IDs as chips in the Reasons column;
+   clicking a row opens the full JSON with the tactic and name.
+
+### Coverage matrix
+
+The `/analytics` page includes a **MITRE ATT&CK coverage** card that groups
+every mapped technique by tactic and shows which ones have actually fired
+in the selected window. Grey chips = mapped but not yet seen; red chips =
+technique detected, with a count.
+
+This is the fastest way to answer the question *"what does this IDS actually
+catch?"* — the coverage view is designed to be the first thing a security
+reviewer looks at.
+
+### Extending the mapping
+
+To add a technique, edit `REASON_TO_TECHNIQUE` in `intelligence/mitre.py`:
+
+```python
+"my_custom_reason": {
+    "technique": "T1234.567",
+    "tactic": "Discovery",
+    "name": "Friendly Human-Readable Name",
+},
+```
+
+The tactic name must match one of the strings in the `TACTICS` list at the
+top of the same file. No restart required for the analytics coverage view —
+it reads the mapping live. A restart is required for `analyze_packet()` to
+start tagging new events with the new technique.
+
+### Currently mapped techniques
+
+| Tactic | Techniques |
+|--------|------------|
+| Initial Access | T1190 |
+| Execution | T1059, T1059.007, T1203 |
+| Credential Access | T1552 |
+| Discovery | T1046, T1083 |
+| Command and Control | T1071, T1071.004, T1105 |
+| Impact | T1498 |
+
+The coverage page groups these by tactic and marks which have fired
+in the observed window. Adding more is a data-entry exercise — the
+infrastructure handles the rest.
+
+---
+
+## Audit Log
+
+Every privileged action is written to an immutable `audit_log` table and
+exposed through an admin-only `/audit` page.
+
+### What gets audited
+
+| Category | Actions |
+|----------|---------|
+| Authentication | `login.success`, `login.failure`, `logout` |
+| MFA | `mfa.totp.enable`, `mfa.totp.disable`, `mfa.email.enable`, `mfa.email.disable` |
+| Password | `password.change` |
+| Profile | `profile.update` |
+| User admin | `user.create`, `user.delete`, `user.set_role`, `user.reset_password`, `user.reset_mfa`, `user.lock`, `user.unlock` |
+| SSL management | `ssl.ca_regenerate`, `ssl.bypass.add`, `ssl.bypass.delete` |
+
+Each row captures: timestamp, actor ID and username, client IP, action,
+target type and ID, outcome (`success` / `failure` / `denied`), and a JSON
+detail blob with context (old role vs. new role, username before change, etc.).
+
+### The page
+
+`/audit` (admin only) shows:
+
+- **KPI cards** — total entries in the last 7 days, failures, distinct actors.
+- **Filter bar** — by action, actor username, outcome.
+- **Paginated table** — cursor-based; each row opens a JSON detail modal.
+- **Distinct action dropdown** — populated from the DB so it stays in sync
+  as new audit actions are added.
+
+### Design notes
+
+- **Non-blocking.** The `audit()` helper never raises. If the audit backend
+  is unreachable, the failure is logged and the original action proceeds.
+  An audit outage should not break login or admin flows.
+- **Immutable by convention.** No UPDATE or DELETE routes. Rows are removed
+  only by the retention worker after 180 days.
+- **Request context aware.** `actor_id`, `actor_username`, and `actor_ip`
+  are resolved from `flask_login.current_user` and `request.remote_addr`
+  automatically. Pre-auth events (`login.failure`) pass `actor_username`
+  explicitly since there's no session yet.
+- **Retention.** `storage/audit.py` defines `_AUDIT_RETENTION_DAYS = 180`.
+  The web UI's retention worker prunes older rows alongside the packet-log
+  retention task.
+
+### Why it matters
+
+The audit trail is the application-level implementation of a control
+required by SOC 2, ISO 27001, and PCI-DSS. It answers the question
+"who did what, when, from where" for any change to the system's
+security posture — and it's the first thing an auditor asks for.
+
+---
+
 ## Web Dashboard
 
 | Route | Description |
@@ -393,17 +529,19 @@ Run once after deployment. Not on a schedule.
 | `/` | Landing / redirect |
 | `/login` | Authentication (password + optional MFA) |
 | `/dashboard` | Main SOC dashboard (requires login) |
-| `/analytics` | Threat analytics (recurring actors, heatmap, patterns) |
+| `/analytics` | Threat analytics + MITRE coverage (requires login) |
 | `/admin` | User management (admin role) |
 | `/settings` | Profile, MFA, password |
 | `/ssl` | TLS interception management (admin only) |
+| `/audit` | Audit trail viewer (admin only) |
 | `/ids/health` | IDS sensor health check |
 | `/ids/stats` | Live statistics (JSON) |
 | `/ids/logs` | Paginated log query (JSON) |
 | `/ids/search` | Advanced log search (JSON) |
 | `/ids/stream` | SSE live event stream |
 | `/ids/update` | Sensor telemetry ingest (token-protected) |
-| `/analytics/api/*` | Analytics query endpoints |
+| `/analytics/api/*` | Analytics query endpoints (including MITRE coverage) |
+| `/audit/api/*` | Audit query endpoints |
 | `/ssl/api/*` | SSL management endpoints |
 | `/metrics` | Prometheus metrics (loopback-only by default; extend `ALLOWED_IPS` in `uni-srver.py` for remote scrapers) |
 
@@ -436,7 +574,11 @@ ids-bachelor-thesis/
 ├── config/                 # Blocklists, performance tuning
 ├── engine/                 # Sniffer, parsers, behavior detection
 ├── ids/                    # Queues, workers, metrics, AI orchestration
-├── intelligence/           # TI, Zeek, sensor process management
+├── intelligence/           # TI, Zeek, sensor process, MITRE mapping
+│   ├── reputation.py       # AbuseIPDB, VirusTotal, ip-api
+│   ├── zeek_integration.py # Zeek log correlation
+│   ├── sensor_process.py   # Heartbeat and PID management
+│   └── mitre.py            # ATT&CK mapping + coverage
 ├── runtime/                # Entry points and process supervisor
 ├── ssl_inspect/            # Optional TLS interception (mitmproxy)
 │   ├── ca.py               # Root CA generation and metadata
@@ -446,8 +588,9 @@ ids-bachelor-thesis/
 │   └── iptables.py         # Redirect helper (install / remove)
 ├── static/                 # CSS and JavaScript assets
 ├── storage/                # DB layer, ORM models, persistence
+│   ├── audit.py            # Audit trail helper + queries
 │   └── analytics.py        # Threat pattern aggregation + query functions
-└── templates/              # HTML templates (login, dashboard, admin, settings, analytics, ssl)
+└── templates/              # HTML templates (login, dashboard, admin, settings, analytics, ssl, audit)
 ```
 
 ---
@@ -601,7 +744,8 @@ Train the initial models:
 python3.13 ai/train_ids_models.py
 ```
 
-Initialize the database schema:
+Initialize the database schema (creates all tables, including `audit_log`
+and the `packet_logs.mitre_json` column):
 
 ```bash
 python3.13 bootstrap_db.py
@@ -679,6 +823,8 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 - **`ip-api.com` free tier is HTTP-only** and can be MITM'd. It contributes only a small weight to final scores; disable with `IPAPI_ENABLED=false` on untrusted networks.
 - **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/mitm-conf/mitmproxy-ca.pem` (chmod 600) and never commit it to source control.
 - **The root CA private key is stored on disk, not in MySQL.** A DB dump alone does not compromise the CA; it only exposes public metadata for the `/ssl` page.
+- **The audit log is an append-only table by convention.** Any code that updates or deletes rows from `audit_log` outside the retention worker is a bug. If you add new privileged actions, wire them through `storage.audit.audit()` so they appear in the trail.
+- **Audit rows are retained for 180 days** by default. If your compliance regime requires longer, edit `_AUDIT_RETENTION_DAYS` in `storage/audit.py` and ensure `packet_logs` retention is set accordingly.
 
 ---
 
@@ -736,6 +882,34 @@ python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tra
   mysql -u test_user -p ids_db_test -e "SELECT bucket_type, COUNT(*) FROM threat_patterns GROUP BY bucket_type;"
   ```
 
+### MITRE coverage page shows no techniques
+
+- The coverage matrix is derived from `packet_logs.mitre_json`. If the column is empty, no suspicious/dangerous events have been processed since the migration. Generate some test traffic and check again.
+- Confirm the migration ran by inspecting the column:
+  ```bash
+  mysql -u test_user -p ids_db_test -e "SHOW COLUMNS FROM packet_logs LIKE 'mitre_json';"
+  ```
+- If the column is missing, re-run `python bootstrap_db.py` or start the app once — the migration runs on startup.
+
+### MITRE chips not showing on the dashboard
+
+- Only suspicious and dangerous events carry MITRE tags by default. Safe traffic has an empty `mitre_json`.
+- If a suspicious event has no chips, its reasons don't map to any technique. Add the mapping in `intelligence/mitre.py` and restart the IDS engine.
+
+### Audit page is empty or shows few entries
+
+- Only privileged actions are audited. Browsing the dashboard doesn't generate audit rows.
+- Trigger one deliberately: log out and back in, or add a bypass rule at `/ssl`.
+- Confirm the table exists:
+  ```bash
+  mysql -u test_user -p ids_db_test -e "SELECT action, outcome, actor_username, ts FROM audit_log ORDER BY id DESC LIMIT 10;"
+  ```
+
+### Audit write fails silently
+
+- By design, `audit()` never raises — an audit backend outage must not break login or admin flows.
+- Look for `Audit write failed` in `logs/*.log`. A recurring error there means the DB connection is flaky or the `audit_log` table is missing. Re-run `python bootstrap_db.py`.
+
 ### SSL interceptor not starting
 
 - Confirm `SSL_DECRYPTION_ENABLED=true` in `.env`.
@@ -774,3 +948,4 @@ Proprietary — © Kamal Khalilov. See the repository for terms.
 - [Chart.js](https://www.chartjs.org/) — dashboard charts
 - [Zeek](https://zeek.org/) — optional network analysis
 - [mitmproxy](https://mitmproxy.org/) — TLS interception engine
+- [MITRE ATT&CK](https://attack.mitre.org/) — technique classification framework

@@ -51,11 +51,15 @@ class Log(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[float] = mapped_column(Float, nullable=False, index=True)
 
-    src_ip: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
-    dst_ip: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # NOTE: MySQL cannot index a TEXT column without a prefix length, so
+    # src_ip/dst_ip must be String(45) — matching PacketLog. Using Text here
+    # previously broke `create_all` with:
+    #   (1170, "BLOB/TEXT column 'dst_ip' used in key specification without a key length")
+    src_ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
+    dst_ip: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     src_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dst_port: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    protocol: Mapped[str | None] = mapped_column(Text, nullable=True)
+    protocol: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
     packets: Mapped[int | None] = mapped_column(Integer, nullable=True)
