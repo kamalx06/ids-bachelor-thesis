@@ -316,6 +316,10 @@ header h1 {
     background: #065f46;
 }
 
+.alert.info {
+    background: #1e3a5f;
+}
+
 .modal-overlay {
     position: fixed;
     inset: 0;
@@ -1082,10 +1086,6 @@ header h1 {
     background: #060a14;
 }
 
-.dashboard-page header:not(.dash-header) {
-    display: none;
-}
-
 @media (max-width: 768px) {
     .dashboard-page .dash-header {
         flex-direction: column;
@@ -1220,4 +1220,134 @@ header h1 {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+/* --- Analytics page --- */
+
+.dashboard-page .analytics-patterns-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
+}
+
+.dashboard-page .analytics-pattern-card {
+    padding: 16px 18px;
+    border-radius: 12px;
+    border: 1px solid var(--dash-border);
+    background: var(--dash-surface);
+}
+
+.dashboard-page .analytics-pattern-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.dashboard-page .analytics-pattern-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #7dd3fc;
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.dashboard-page .analytics-pattern-actor {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.875rem;
+    color: var(--dash-text);
+    word-break: break-all;
+}
+
+.dashboard-page .analytics-pattern-line {
+    margin: 4px 0 0;
+    font-size: 0.8125rem;
+    color: var(--dash-text);
+}
+
+.dashboard-page .analytics-pattern-line.small {
+    color: var(--dash-muted);
+    font-size: 0.75rem;
+}
+
+.dashboard-page .analytics-heatmap-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-size: 0.8125rem;
+    color: var(--dash-muted);
+}
+
+.dashboard-page .analytics-heatmap-controls select {
+    width: auto;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--dash-border);
+    background: rgba(6, 10, 20, 0.55);
+    color: var(--dash-text);
+    font-size: 0.8125rem;
+}
+
+.dashboard-page .analytics-heatmap {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.dashboard-page .analytics-heatmap-row {
+    display: grid;
+    grid-template-columns: 44px repeat(24, minmax(0, 1fr));
+    gap: 3px;
+    align-items: center;
+}
+
+.dashboard-page .analytics-heatmap-row--header {
+    margin-bottom: 2px;
+}
+
+.dashboard-page .analytics-heatmap-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--dash-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.dashboard-page .analytics-heatmap-hour {
+    font-size: 0.625rem;
+    text-align: center;
+    color: var(--dash-muted);
+}
+
+.dashboard-page .analytics-heatmap-cell {
+    display: block;
+    height: 22px;
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.06);
+    transition: transform 0.12s, outline 0.12s;
+    outline: 1px solid transparent;
+}
+
+.dashboard-page .analytics-heatmap-cell:hover {
+    transform: scale(1.15);
+    outline-color: rgba(255, 255, 255, 0.4);
+    z-index: 2;
+}
+
+.dashboard-page .analytics-table-wrap {
+    max-height: 340px;
+    overflow-y: auto;
+    border-radius: 10px;
+    border: 1px solid var(--dash-border);
+}
+
+.dashboard-page .analytics-table-wrap table {
+    font-size: 0.8125rem;
 }

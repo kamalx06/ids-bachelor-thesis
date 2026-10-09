@@ -106,6 +106,14 @@ if (modal) {
     });
 }
 
+// Close any modal when clicking the overlay (outside the inner card).
+document.querySelectorAll(".modal-overlay").forEach(function (m) {
+    if (m === modal) return;   // QR modal has its own handler above
+    m.addEventListener("click", function (e) {
+        if (e.target === m) closeModal(m);
+    });
+});
+
 if (verifyBtn) {
     verifyBtn.addEventListener("click", handleVerifyClick);
 }

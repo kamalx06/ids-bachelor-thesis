@@ -1,11 +1,15 @@
 """
 Unified model retraining for the AI IDS.
 
-Training reads exclusively from the training_data table (MySQL primary, SQLite fallback).
-Live IDS traffic is collected into that table by ids_engine.py.
+Training reads exclusively from the training_data table (MySQL primary,
+SQLite fallback). Live IDS traffic is collected into that table by
+ids_engine.py.
 
-Incremental mode (default): extends the existing RandomForest with new trees trained on
-all rows in training_data, then refits scaler/ISO on the combined dataset.
+Default mode: full retrain on all accumulated rows. The forest genuinely
+reflects the entire training distribution each cycle, so as more rows
+accumulate the model improves. Pass --incremental to instead extend the
+existing forest with extra trees (faster on very large datasets, but old
+trees never see new data and the forest grows without getting smarter).
 
 Bootstrap empty table from CIC CSV:
   python -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --train
@@ -13,6 +17,7 @@ Bootstrap empty table from CIC CSV:
 CLI:
   python -m ai.retrainer --preview
   python -m ai.retrainer --source mysql
+  python -m ai.retrainer --incremental   # opt into warm start
 """
 
 from __future__ import annotations
@@ -158,7 +163,12 @@ class RetrainConfig:
     csv_path: Path | None = None
     source: SourceName = "auto"
     allow_csv_fallback: bool = False
-    incremental: bool = True
+    # Warm-start accumulates trees without ever revisiting old ones, so the
+    # forest gets slower and staler over time without strictly improving.
+    # Full retrain on the accumulated training_data each cycle is monotonic:
+    # as the dataset grows, the model improves. Opt into warm start only for
+    # very large datasets where a full refit is too expensive.
+    incremental: bool = False
     incremental_trees: int = 100
 
 
@@ -696,9 +706,10 @@ def _build_cli() -> argparse.ArgumentParser:
         help="Run training after --seed-csv",
     )
     p.add_argument(
-        "--no-incremental",
+        "--incremental",
         action="store_true",
-        help="Train a fresh model instead of extending the current RF",
+        help="Extend the existing RF with new trees instead of full retrain "
+             "(default: full retrain on all accumulated data)",
     )
     p.add_argument(
         "--incremental-trees",
@@ -722,7 +733,7 @@ def main() -> int:
         csv_path=args.csv,
         source=args.source,
         allow_csv_fallback=args.csv_fallback,
-        incremental=not args.no_incremental,
+        incremental=args.incremental,
         incremental_trees=args.incremental_trees,
     )
 

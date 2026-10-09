@@ -55,6 +55,9 @@ function avatarCell(u) {
     const bust = `${u.avatar_url}?v=${encodeURIComponent(String(u.id))}`;
     img.src = bust;
   } else {
+    // First char of username injected into an SVG data URI. Safe today
+    // because USERNAME_RE in uni-srver.py limits usernames to [a-zA-Z0-9_-].
+    // If that rule is ever loosened, XML-escape this value.
     img.src =
       "data:image/svg+xml;charset=utf-8," +
       encodeURIComponent(

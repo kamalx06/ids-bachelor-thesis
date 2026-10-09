@@ -21,7 +21,6 @@ import dotenv
 from email.message import EmailMessage
 from PIL import Image
 import re
-import pyclamd
 import json
 import hashlib
 from storage.memory_store import stats, logs, sync_stats_from_persistence
@@ -30,6 +29,14 @@ from storage.mysql_store import (
     aggregate_traffic_timeseries,
     query_logs,
     cleanup_old_logs,
+)
+from storage.analytics import (
+    get_heatmap,
+    get_periodic_patterns,
+    get_recurring_actors,
+    get_top_threats,
+    get_weekly_summary,
+    start_analytics_worker,
 )
 from storage.persistence import (
     apply_telemetry_stats,
@@ -44,13 +51,15 @@ import time
 
 dotenv.load_dotenv()
 
-required_vars = ["FLASK_SECRET", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"]
+required_vars = ["FLASK_SECRET"]
+smtp_vars = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"]
 
 missing = [var for var in required_vars if not os.environ.get(var)]
 if missing:
     raise RuntimeError(f"Missing environment variables: {', '.join(missing)}")
 
-for var in required_vars:
+# SMTP is optional: only required when email OTP / alert email is used.
+for var in required_vars + smtp_vars:
     globals()[var] = os.environ.get(var)
 
 app = Flask(__name__)
@@ -352,6 +361,10 @@ def start_retention_worker():
             logging.getLogger(__name__).error("Retention worker failed", exc_info=True)
         time.sleep(3600)
 
+def start_analytics_worker_thread():
+    """Kick off the hourly analytics aggregation loop in a daemon thread."""
+    from storage.analytics import start_analytics_worker as _run
+    Thread(target=_run, daemon=True, name="analytics-worker").start()
 
 def mask_email(email_value: str) -> str:
     if not email_value or "@" not in email_value:
@@ -372,6 +385,14 @@ def _clamav_scan_clean(data: bytes) -> bool:
     upload) but log it loudly.
     """
     import logging
+
+    try:
+        import pyclamd
+    except ImportError:
+        logging.getLogger(__name__).warning(
+            "pyclamd not installed; skipping avatar malware scan"
+        )
+        return True
 
     try:
         cd = pyclamd.ClamdUnixSocket()
@@ -651,9 +672,9 @@ def check_totp():
             _record_password_failure(user.id)
             return api_error("Invalid credentials", status_code=401)
 
-        user.failed_attempts = 0
-        user.locked_until = None
-        s.commit()
+        # Do NOT reset failed_attempts here: reset happens only after full
+        # MFA success in /login. Resetting now would let a valid password
+        # clear the lockout counter before the second factor is verified.
 
         totp_enabled = bool(user.totp_enabled)
         email_otp_enabled = bool(user.email_otp_enabled)
@@ -713,9 +734,8 @@ def start_login_email_otp():
             _record_password_failure(user.id)
             return api_error("Invalid credentials", status_code=401)
 
-        user.failed_attempts = 0
-        user.locked_until = None
-        s.commit()
+        # Do NOT reset failed_attempts here: reset only after full MFA
+        # success in /login.
 
         if not user.email or not user.email_otp_enabled:
             return api_error(
@@ -943,8 +963,8 @@ def change_password():
         session["settings_error"] = "Current password is incorrect"
         return redirect("/settings")
 
-    if len(new_password) < 8:
-        session["settings_error"] = "Password must be at least 8 characters"
+    if len(new_password) < 12:
+        session["settings_error"] = "Password must be at least 12 characters"
         return redirect("/settings")
 
     if len(new_password) > MAX_PASSWORD_LEN:
@@ -1350,6 +1370,11 @@ def disable_email_otp():
 def dashboard():
     return render_template("dashboard.html")
 
+@app.route("/analytics")
+@login_required
+@role_required("admin", "soc")
+def analytics_page():
+    return render_template("analytics.html")
 
 @app.route("/admin")
 @login_required
@@ -1362,8 +1387,11 @@ def admin_panel():
 @login_required
 @role_required("admin")
 def admin_list_users():
-    page = max(1, int(request.args.get("page", 1)))
-    page_size = max(1, min(int(request.args.get("page_size", 25)), 100))
+    page = max(1, request.args.get("page", default=1, type=int) or 1)
+    page_size = max(
+        1,
+        min(request.args.get("page_size", default=25, type=int) or 25, 100),
+    )
     q = (request.args.get("q") or "").strip()
     sort = (request.args.get("sort") or "id").lower()
     order = (request.args.get("order") or "desc").lower()
@@ -1625,6 +1653,87 @@ def admin_user_avatar(user_id: int):
 
     return send_file(full_path)
 
+# --- Analytics APIs ---
+
+@app.route("/analytics/api/heatmap")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_heatmap():
+    weeks = request.args.get("weeks", default=4, type=int) or 4
+    try:
+        return api_ok(get_heatmap(weeks=weeks))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/analytics/api/recurring-ips")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_recurring_ips():
+    min_days = request.args.get("min_days", default=3, type=int) or 3
+    lookback_days = request.args.get("days", default=30, type=int) or 30
+    try:
+        return api_ok(get_recurring_actors(
+            field="src_ip", min_days=min_days, lookback_days=lookback_days,
+        ))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/analytics/api/recurring-hosts")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_recurring_hosts():
+    min_days = request.args.get("min_days", default=3, type=int) or 3
+    lookback_days = request.args.get("days", default=30, type=int) or 30
+    try:
+        return api_ok(get_recurring_actors(
+            field="host", min_days=min_days, lookback_days=lookback_days,
+        ))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/analytics/api/top-threats")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_top_threats():
+    lookback_days = request.args.get("days", default=30, type=int) or 30
+    try:
+        return api_ok(get_top_threats(lookback_days=lookback_days))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/analytics/api/patterns")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_patterns():
+    lookback_days = request.args.get("days", default=60, type=int) or 60
+    try:
+        ip_patterns = get_periodic_patterns(
+            field="src_ip", lookback_days=lookback_days,
+        )
+        host_patterns = get_periodic_patterns(
+            field="host", lookback_days=lookback_days,
+        )
+        return api_ok({
+            "ip_patterns": ip_patterns,
+            "host_patterns": host_patterns,
+        })
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
+
+
+@app.route("/analytics/api/weekly-summary")
+@login_required
+@role_required("admin", "soc")
+def analytics_api_weekly_summary():
+    weeks = request.args.get("weeks", default=12, type=int) or 12
+    try:
+        return api_ok(get_weekly_summary(weeks=weeks))
+    except Exception as e:
+        return api_error(str(e), status_code=500, code="internal_error")
 
 # --- IDS engine health (dashboard live indicator) ---
 @app.route("/ids/health")
@@ -1684,8 +1793,8 @@ def ids_sensor_update():
 @login_required
 @role_required("admin", "soc")
 def get_stats():
-    payload = load_statistics_for_api()
     sync_stats_from_persistence()
+    payload = load_statistics_for_api()
     return api_ok(payload)
 
 
@@ -1912,7 +2021,7 @@ def search_logs_api():
 
 
 def _start_ids_sensor_if_enabled() -> None:
-    enabled = (os.getenv("WEBUI_START_IDS_SENSOR", "true") or "true").lower() == "true"
+    enabled = (os.getenv("WEBUI_START_IDS_SENSOR", "false") or "false").lower() == "true"
     if not enabled:
         return
     try:

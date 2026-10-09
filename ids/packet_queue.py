@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from queue import Empty, Full, Queue  # noqa: F401 — Empty used by dequeue_packet
+from queue import Empty, Full, Queue
 from typing import Any, Callable
 
 from logging_config import get_logger
@@ -42,7 +42,13 @@ class PacketQueues:
         raw_fill = self.raw_queue.qsize() / float(_RAW_QUEUE_MAXSIZE)
         return max(packet_fill, raw_fill)
 
-    def should_sample_under_pressure(self) -> bool:
+    def should_skip_under_pressure(self) -> bool:
+        """
+        Returns True when the caller should drop this packet.
+
+        Under pressure, keep 1 in 4 packets and drop the rest, so downstream
+        workers aren't flooded by a burst that just fills the queue anyway.
+        """
         if self.pressure() < _PRESSURE_SAMPLE_AT:
             return False
         self._sample_counter += 1
@@ -74,10 +80,7 @@ class PacketQueues:
         )
 
     def dequeue_raw_packet(self, timeout: float = 1.0) -> Any | None:
-        try:
-            return self.raw_queue.get(timeout=timeout)
-        except Empty:  # pylint: disable=try-except-raise
-            return None
+        return self.raw_queue.get(timeout=timeout)
 
     def enqueue_packet(self, item: dict) -> bool:
         try:
@@ -115,10 +118,7 @@ class PacketQueues:
             return False
 
     def dequeue_packet(self, timeout: float = 1.0) -> dict | None:
-        try:
-            return self.packet_queue.get(timeout=timeout)
-        except Empty:  # pylint: disable=try-except-raise
-            return None
+        return self.packet_queue.get(timeout=timeout)
 
     def process_with_retry(
         self,

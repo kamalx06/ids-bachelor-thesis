@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from logging_config import get_logger
@@ -25,17 +26,17 @@ logger = get_logger(__name__)
 
 _STATS_LOCK = threading.Lock()
 _FLUSH_LOCK = threading.Lock()
-_STATS_PERSIST_INTERVAL = float(__import__("os").getenv("IDS_STATS_PERSIST_INTERVAL", "2") or "2")
+_STATS_PERSIST_INTERVAL = float(os.getenv("IDS_STATS_PERSIST_INTERVAL", "2") or "2")
 _last_stats_persist = 0.0
 _LOG_BATCH: deque[dict] = deque()
 _AI_BATCH: deque[dict] = deque()
 _TRAINING_BATCH: deque[dict] = deque()
-_BATCH_SIZE = max(1, int(__import__("os").getenv("IDS_DB_BATCH_SIZE", "50") or "50"))
-_FLUSH_INTERVAL = float(__import__("os").getenv("IDS_DB_FLUSH_INTERVAL", "0.5") or "0.5")
-_TI_TTL_SECONDS = int(__import__("os").getenv("IDS_TI_CACHE_TTL", "3600") or "3600")
-_RETENTION_DAYS = int(__import__("os").getenv("IDS_LOG_RETENTION_DAYS", "7") or "7")
-_TRAINING_ENABLED = (__import__("os").getenv("IDS_TRAINING_ENABLED", "true") or "true").lower() == "true"
-_TRAINING_SAFE_RATE = float(__import__("os").getenv("IDS_TRAINING_SAFE_SAMPLE_RATE", "0.02") or "0.02")
+_BATCH_SIZE = max(1, int(os.getenv("IDS_DB_BATCH_SIZE", "50") or "50"))
+_FLUSH_INTERVAL = float(os.getenv("IDS_DB_FLUSH_INTERVAL", "0.5") or "0.5")
+_TI_TTL_SECONDS = int(os.getenv("IDS_TI_CACHE_TTL", "3600") or "3600")
+_RETENTION_DAYS = int(os.getenv("IDS_LOG_RETENTION_DAYS", "7") or "7")
+_TRAINING_ENABLED = (os.getenv("IDS_TRAINING_ENABLED", "true") or "true").lower() == "true"
+_TRAINING_SAFE_RATE = float(os.getenv("IDS_TRAINING_SAFE_SAMPLE_RATE", "0.02") or "0.02")
 
 # In-memory mirror for fast telemetry (synced to MySQL)
 _live_stats: dict[str, Any] = {
@@ -191,9 +192,10 @@ def _persist_statistics_unlocked() -> None:
 def _maybe_persist_statistics() -> None:
     global _last_stats_persist
     now = time.time()
-    if now - _last_stats_persist < _STATS_PERSIST_INTERVAL:
-        return
-    _last_stats_persist = now
+    with _STATS_LOCK:
+        if now - _last_stats_persist < _STATS_PERSIST_INTERVAL:
+            return
+        _last_stats_persist = now
     _persist_statistics_unlocked()
 
 
@@ -212,9 +214,11 @@ def _mirror_stats_to_memory_store_unlocked() -> None:
     memory_store.stats["safe"] = _live_stats["safe"]
     memory_store.stats["suspicious"] = _live_stats["suspicious"]
     memory_store.stats["dangerous"] = _live_stats["dangerous"]
-    memory_store.stats["unique_attackers"] = _live_stats["unique_attackers"]
-    memory_store.stats["dangerous_ips"] = _live_stats["dangerous_ips"]
-    memory_store.stats["dangerous_urls"] = _live_stats["dangerous_urls"]
+    # Copy sets so callers can't accidentally mutate the authoritative
+    # _live_stats backing store by writing to memory_store.stats.
+    memory_store.stats["unique_attackers"] = set(_live_stats["unique_attackers"])
+    memory_store.stats["dangerous_ips"] = set(_live_stats["dangerous_ips"])
+    memory_store.stats["dangerous_urls"] = set(_live_stats["dangerous_urls"])
 
 
 def record_analysis_result(

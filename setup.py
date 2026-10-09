@@ -94,28 +94,10 @@ class BootstrapDatabaseCommand(Command):
             raise SystemExit(rc)
 
 
-try:
-    from setuptools.command.develop import develop as _develop
-
-    class DevelopWithBootstrap(_develop):
-        def run(self) -> None:
-            super().run()
-            _bootstrap_database_best_effort()
-
-except ImportError:
-    DevelopWithBootstrap = None
-
-
-try:
-    from setuptools.command.install import install as _install
-
-    class InstallWithBootstrap(_install):
-        def run(self) -> None:
-            super().run()
-            _bootstrap_database_best_effort()
-
-except ImportError:
-    InstallWithBootstrap = None
+# NOTE: DB bootstrap intentionally runs only via the explicit
+# `bootstrap_db` command / `ai-ids-bootstrap-db` entry point. Running it
+# from install/develop breaks `pip install -e .` when MySQL is not yet
+# configured or unreachable.
 
 
 requirements = _read_requirements()
@@ -124,14 +106,10 @@ packages = _discover_packages()
 cmdclass: dict = {
     "bootstrap_db": BootstrapDatabaseCommand,
 }
-if InstallWithBootstrap is not None:
-    cmdclass["install"] = InstallWithBootstrap
-if DevelopWithBootstrap is not None:
-    cmdclass["develop"] = DevelopWithBootstrap
 
 setup(
     name="ai-ids",
-    version="1.1.0",
+    version="1.0.0",
     description="Enterprise AI Intrusion Detection System with Web dashboard and ML pipeline",
     long_description=_read_long_description(),
     long_description_content_type="text/markdown",
@@ -141,15 +119,23 @@ setup(
     packages=packages,
     package_dir={"": "."},
     include_package_data=True,
-    package_data={
-        "": [],
-    },
-    data_files=[
-        (
-            "share/ai-ids/sql",
-            [str(ROOT / "scripts" / "sql" / "migrate_ids_schema.sql")],
-        ),
+    py_modules=[
+        "main",
+        "ids_engine",
+        "uni_server",
+        "bootstrap_db",
+        "retrain_model",
+        "merge_cic_ids",
     ],
+    package_data={
+        "": [
+            "templates/*.html",
+            "static/**/*",
+            "config/*",
+            "env-example",
+        ],
+    },
+    data_files=[],
     install_requires=requirements,
     extras_require={
         "dev": ["pytest"],

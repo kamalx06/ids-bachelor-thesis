@@ -1,7 +1,7 @@
 import math
 from collections import Counter
 
-from scapy.all import IP, TCP, UDP, ICMP
+from scapy.all import IP, TCP, UDP
 
 from ids.event_timestamp import scapy_packet_epoch_seconds
 
@@ -18,13 +18,13 @@ _COMMON_PORTS = {
     "databases": {3306, 5432, 27017},
 }
 
-def _protocol_name(proto: int, pkt) -> str:
-    if pkt.haslayer(ICMP):
-        return "ICMP"
+def _protocol_name(proto: int) -> str:
     if proto == 1:
         return "TCP"
     if proto == 2:
         return "UDP"
+    if proto == 3:
+        return "ICMP"
     return "OTHER"
 
 
@@ -37,6 +37,8 @@ def _payload_entropy(pkt) -> float:
         data = bytes(pkt[Raw].load)
         if not data:
             return 0.0
+        if len(data) > 4096:
+            data = data[:4096]
         counts = Counter(data)
         length = len(data)
         entropy = 0.0
@@ -86,7 +88,7 @@ def extract(pkt):
     )
     features = vector_from_flow_snapshot(snapshot)
 
-    protocol_name = _protocol_name(proto, pkt)
+    protocol_name = _protocol_name(proto)
     unusual_port = None
     port_category = _classify_port(dport)
     if dport and port_category == "unknown" and dport > 1024:

@@ -204,8 +204,10 @@ def recursive_url_decode(data, max_rounds=5):
 
 
 def decode_unicode_escapes(data):
+    if "\\u" not in data and "\\x" not in data:
+        return data
     try:
-        return data.encode("utf-8").decode("unicode_escape")
+        return data.encode("latin-1", "backslashreplace").decode("unicode_escape")
     except Exception:
         return data
 
@@ -235,28 +237,26 @@ def decode_base64(data):
     return data
 
 
-def normalize_payload(payload):
+_MAX_PAYLOAD_VARIANTS = 64
 
+
+def normalize_payload(payload):
     versions = set()
     queue = [payload]
 
-    while queue:
+    while queue and len(versions) < _MAX_PAYLOAD_VARIANTS:
         current = queue.pop()
-
         if current in versions:
             continue
-
         versions.add(current)
-
         candidates = [
             recursive_url_decode(current),
             html.unescape(current),
             decode_unicode_escapes(current),
             decode_base64(current),
         ]
-
         for candidate in candidates:
-            if candidate not in versions:
+            if candidate not in versions and len(versions) < _MAX_PAYLOAD_VARIANTS:
                 queue.append(candidate)
 
     return versions

@@ -1,8 +1,14 @@
 import os
+import sys
 import logging
 import warnings
+from pathlib import Path
 
 import numpy as np
+
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(_ROOT.parent))
 
 warnings.filterwarnings(
     "ignore",
@@ -33,9 +39,6 @@ from cic_features import (
     features_from_dataframe,
 )
 
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parent
 DATA_PATH = str(_ROOT / "data" / "cic_ids.csv")
 MODEL_DIR = str(_ROOT / "models")
 RANDOM_STATE = 42
@@ -74,10 +77,13 @@ X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, **split_kwargs)
 
 logging.info("Training RandomForest...")
 
+# Must match RetrainConfig defaults in ai/retrainer.py — otherwise the
+# warm-start retrain mixes trees built with different depth limits and
+# class-weighting strategies into a single forest.
 rf = RandomForestClassifier(
     n_estimators=200,
-    max_depth=15,
-    class_weight="balanced",
+    max_depth=None,
+    class_weight="balanced_subsample",
     random_state=RANDOM_STATE,
     n_jobs=-1,
 )
@@ -123,12 +129,32 @@ else:
     )
     iso.fit(normal_data)
 
+import tempfile
+
+
+def _atomic_joblib_dump(obj, path):
+    """Write to a temp file then rename, so a mid-save crash can't leave a
+    half-written .pkl paired with the rest of a mismatched model set."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".pkl.tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        joblib.dump(obj, tmp_path)
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 logging.info("Saving models...")
 
-joblib.dump(rf, os.path.join(MODEL_DIR, "rf_model.pkl"))
+_atomic_joblib_dump(rf, Path(MODEL_DIR) / "rf_model.pkl")
 if iso is not None:
-    joblib.dump(iso, os.path.join(MODEL_DIR, "iso_model.pkl"))
-joblib.dump(scaler, os.path.join(MODEL_DIR, "scaler.pkl"))
-joblib.dump(FEATURE_NAMES, os.path.join(MODEL_DIR, "feature_names.pkl"))
+    _atomic_joblib_dump(iso, Path(MODEL_DIR) / "iso_model.pkl")
+_atomic_joblib_dump(scaler, Path(MODEL_DIR) / "scaler.pkl")
+_atomic_joblib_dump(FEATURE_NAMES, Path(MODEL_DIR) / "feature_names.pkl")
 
 logging.info("[SUCCESS] All models trained and saved (%d features).", FEATURE_COUNT)

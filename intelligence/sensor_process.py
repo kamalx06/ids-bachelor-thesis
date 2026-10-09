@@ -139,7 +139,7 @@ def start_sensor_background(*, verbose: bool = False) -> subprocess.Popen | None
         return None
 
     env = os.environ.copy()
-    env["IDS_START_WEB_UI"] = "false"
+    # Prevent the child from starting a competing sensor in turn.
     env["WEBUI_START_IDS_SENSOR"] = "false"
 
     stdout = None if verbose else subprocess.DEVNULL

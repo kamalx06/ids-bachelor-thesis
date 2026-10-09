@@ -64,8 +64,9 @@ def save_training_data(features, label: str) -> None:
     """Persist a live feature vector into training_data (MySQL + SQLite)."""
     from storage import persistence
 
+    # Let the batch writer flush on its own schedule — forcing a synchronous
+    # commit here defeats batching and dominates throughput at high packet rates.
     persistence.enqueue_training_sample(features, label)
-    persistence.flush_batches(force=True)
 
     # Keep SQLite copy for offline / legacy tooling
     import numpy as np

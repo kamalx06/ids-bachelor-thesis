@@ -21,6 +21,16 @@ _LOCK = threading.Lock()
 _EVENTS: dict[str, list[tuple[float, frozenset[str]]]] = defaultdict(list)
 _LAST_EMAIL: dict[str, float] = {}
 
+# Drop idle IPs from both maps once every this many calls, so a spoofed-source
+# scan doesn't leave the process holding per-IP state forever.
+_EVICT_EVERY = 5000
+_evict_counter = 0
+
+# The longest a piece of per-IP state is useful. Events older than the burst
+# window are already dropped on every call; the last-email timestamp is only
+# useful for _DEDUP_SEC. Keep whichever is longer.
+_MAX_IDLE_SEC = max(_WINDOW_SEC, _DEDUP_SEC)
+
 
 def _burst_eligible(classification: str | None, risk_score: float | None) -> bool:
     c = (classification or "").lower()
@@ -31,6 +41,23 @@ def _burst_eligible(classification: str | None, risk_score: float | None) -> boo
     return False
 
 
+def _evict_idle_locked(now: float) -> None:
+    """Drop IPs whose last event is older than the useful window.
+
+    Called under _LOCK by maybe_alert_dangerous_burst every _EVICT_EVERY
+    calls, so the sweep is amortized and doesn't block the alerting hot path.
+    """
+    stale_cutoff = now - _MAX_IDLE_SEC
+    stale_ips = [
+        ip
+        for ip, events in _EVENTS.items()
+        if not events or events[-1][0] < stale_cutoff
+    ]
+    for ip in stale_ips:
+        _EVENTS.pop(ip, None)
+        _LAST_EMAIL.pop(ip, None)
+
+
 def _threat_types(reasons: list | None) -> frozenset[str]:
     out: set[str] = set()
     if not reasons:
@@ -38,10 +65,7 @@ def _threat_types(reasons: list | None) -> frozenset[str]:
     for r in reasons:
         if not isinstance(r, str) or not r.strip():
             continue
-        s = r.strip()
-        out.add(s)
-        if s.startswith("reputation_ip_") or s.startswith("reputation_url_"):
-            out.add(s)
+        out.add(r.strip())
     return frozenset(out)
 
 
@@ -57,11 +81,17 @@ def maybe_alert_dangerous_burst(
     if not _burst_eligible(classification, risk_score):
         return
 
+    global _evict_counter
+
     now = time.time()
     cutoff = now - _WINDOW_SEC
     types = _threat_types(reasons)
 
     with _LOCK:
+        _evict_counter += 1
+        if _evict_counter % _EVICT_EVERY == 0:
+            _evict_idle_locked(now)
+
         bucket = _EVENTS[src_ip]
         bucket.append((now, types))
         bucket[:] = [(t, ts) for t, ts in bucket if t >= cutoff]

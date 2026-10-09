@@ -29,13 +29,19 @@ def unsubscribe(q: queue.Queue) -> None:
 
 def broadcast(event_type: str, payload: dict[str, Any]) -> None:
     message = {"type": event_type, "data": payload, "ts": time.time()}
+    dead: list[queue.Queue] = []
     with _lock:
         listeners = list(_listeners)
     for q in listeners:
         try:
             q.put_nowait(message)
         except queue.Full:
-            pass
+            dead.append(q)
+    if dead:
+        with _lock:
+            for q in dead:
+                if q in _listeners:
+                    _listeners.remove(q)
 
 
 def sse_stream():

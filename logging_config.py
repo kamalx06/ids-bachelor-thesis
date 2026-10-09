@@ -28,10 +28,10 @@ def get_logger(name: str) -> logging.Logger:
     level = logging.DEBUG if debug else getattr(logging, level_name, logging.INFO)
 
     root = logging.getLogger()
+    root.setLevel(level)
     if not root.handlers:
-        root.setLevel(level)
         use_json = (os.getenv("IDS_LOG_JSON", "false") or "false").lower() == "true"
-
+        
         if use_json:
             handler: logging.Handler = logging.StreamHandler(sys.stdout)
             handler.setFormatter(JsonFormatter())
@@ -42,10 +42,12 @@ def get_logger(name: str) -> logging.Logger:
             )
         root.addHandler(handler)
 
-        log_dir = Path(os.getenv("IDS_LOG_DIR", "logs"))
+        project_root = Path(__file__).resolve().parent
+        log_dir = Path(os.getenv("IDS_LOG_DIR", str(project_root / "logs")))
         log_dir.mkdir(parents=True, exist_ok=True)
+        log_filename = os.getenv("IDS_LOG_FILE") or f"{Path(sys.argv[0]).stem or 'ai-ids'}.log"
         file_handler = RotatingFileHandler(
-            log_dir / "ids.log",
+            log_dir / log_filename,
             maxBytes=int(os.getenv("IDS_LOG_MAX_BYTES", "10485760") or "10485760"),
             backupCount=int(os.getenv("IDS_LOG_BACKUP_COUNT", "5") or "5"),
         )

@@ -28,7 +28,8 @@
     </div>
     <nav class="dash-nav" aria-label="Main">
         <a href="/dashboard" class="dash-nav-link">Monitoring</a>
-        {% if current_user.is_authenticated and current_user.role|lower == "admin" %}
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
         <a href="/admin" class="dash-nav-link">Admin</a>
         {% endif %}
         <a href="/settings" class="dash-nav-link is-active">Settings</a>
@@ -46,7 +47,7 @@
         <div class="settings-header">
             <div class="avatar-shell">
                 {% if avatar_url %}
-                    <img id="avatarPreview" src="{{ avatar_url }}" alt="Profile picture">
+                    <img id="avatarPreview" src="{{ avatar_url }}?v={{ username|urlencode }}" alt="Profile picture">
                 {% else %}
                     <div id="avatarInitials" class="avatar-initials">{{ (username or '')[:1].upper() }}</div>
                 {% endif %}
@@ -160,7 +161,7 @@
     <div class="modal dash-modal-inner">
         <h4>Verify your authenticator code</h4>
         <p class="small">Enter the 6-digit code from your authenticator app to confirm that TOTP has been set up correctly.</p>
-        <input id="totpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <input id="totpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\d{6}">
         <button type="button" id="totpVerifySubmit" class="primary dash-btn">Verify</button>
     </div>
 </div>
@@ -170,7 +171,7 @@
         <h4>Disable TOTP</h4>
         <p class="small">Enter your account password and a current code from your authenticator app to disable TOTP.</p>
         <input id="disableTotpPassword" type="password" placeholder="Account password" autocomplete="current-password">
-        <input id="disableTotpCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit TOTP code" maxlength="6" pattern="\\d{6}">
+        <input id="disableTotpCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit TOTP code" maxlength="6" pattern="\d{6}">
         <button type="button" id="disableTotpConfirm" class="danger dash-btn">Disable TOTP</button>
         <button type="button" data-close-modal="disableTotpModal" class="secondary dash-btn">Cancel</button>
     </div>
@@ -180,7 +181,7 @@
     <div class="modal dash-modal-inner">
         <h4>Verify email code</h4>
         <p class="small">We have sent a 6-digit verification code to your email. Enter it below to enable email-based OTP.</p>
-        <input id="emailOtpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <input id="emailOtpVerifyInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\d{6}">
         <button type="button" id="emailOtpVerifySubmit" class="primary dash-btn">Verify</button>
         <button type="button" data-close-modal="emailOtpVerifyModal" class="secondary dash-btn">Cancel</button>
     </div>
@@ -191,7 +192,7 @@
         <h4>Disable email-based OTP</h4>
         <p class="small">Enter your account password and the 6-digit code sent to your email to disable email-based OTP.</p>
         <input id="emailOtpDisablePassword" type="password" placeholder="Account password" autocomplete="current-password">
-        <input id="emailOtpDisableCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\\d{6}">
+        <input id="emailOtpDisableCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="6" pattern="\d{6}">
         <button type="button" id="emailOtpDisableConfirm" class="danger dash-btn">Disable email OTP</button>
         <button type="button" data-close-modal="emailOtpDisableModal" class="secondary dash-btn">Cancel</button>
     </div>

@@ -32,13 +32,27 @@ def detect(src_ip, dst_port=None):
     if not src_ip:
         return None
 
-    now = time.time()
     shard = _shard_index(str(src_ip))
     lock = _behavior_locks[shard]
     activity_map = _ip_activity[shard]
 
     with lock:
-        activity = activity_map[src_ip]
+        now = time.time()
+        activity = activity_map.get(src_ip)
+        if activity is None:
+            activity = _new_activity()
+            activity_map[src_ip] = activity
+            # Opportunistic eviction: if the shard has grown large, drop
+            # IPs that have been idle for the whole window. Cheap because
+            # only triggered at capacity.
+            if len(activity_map) > 10_000:
+                stale = [
+                    ip for ip, dq in activity_map.items()
+                    if not dq or now - dq[-1]["time"] > _MAX_WINDOW
+                ]
+                for ip in stale:
+                    activity_map.pop(ip, None)
+
         activity.append({"time": now, "dst_port": dst_port})
 
         while activity and now - activity[0]["time"] > _MAX_WINDOW:

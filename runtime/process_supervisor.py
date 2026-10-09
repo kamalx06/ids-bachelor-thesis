@@ -24,8 +24,10 @@ class ProcessSupervisor:
 
     def _base_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        # Belt-and-braces: even if someone flips WEBUI_START_IDS_SENSOR=true
+        # in .env, the supervisor still owns process lifecycle — the web UI
+        # must not start its own sensor.
         env["WEBUI_START_IDS_SENSOR"] = "false"
-        env["IDS_START_WEB_UI"] = "false"
         return env
 
     def start_ids_engine(self) -> subprocess.Popen:
@@ -33,7 +35,6 @@ class ProcessSupervisor:
             raise FileNotFoundError(f"IDS engine script not found: {IDS_ENGINE_SCRIPT}")
 
         env = self._base_env()
-        env["IDS_ENGINE_STANDALONE"] = "true"
 
         proc = subprocess.Popen(
             [sys.executable, str(IDS_ENGINE_SCRIPT)],
@@ -83,9 +84,17 @@ class ProcessSupervisor:
 
     def _register_signal_handlers(self) -> None:
         def _handler(signum, frame):
+            if self._shutdown:
+                # Second signal during shutdown — force-exit rather than
+                # re-entering _terminate mid-wait.
+                logger.warning("Second shutdown signal (%s); forcing exit.", signum)
+                raise SystemExit(1)
             logger.info("Shutdown signal received (%s)", signum)
-            self.shutdown()
-            raise SystemExit(0)
+            self._shutdown = True
+            # Don't call shutdown() or raise SystemExit here. Setting the
+            # flag is enough: the sleep in run_forever() is interrupted by
+            # the signal, the loop condition `while not self._shutdown`
+            # evaluates False, and shutdown runs once, in the normal flow.
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -97,8 +106,27 @@ class ProcessSupervisor:
         self._register_signal_handlers()
 
         self.start_web_server()
+        # Give Flask a moment to bind the socket. The health check below
+        # catches the case where it crashes during startup, so this is a
+        # soft delay, not a hard requirement.
         time.sleep(1.0)
-        self.start_ids_engine()
+
+        # Verify the web server survived its startup window before spawning
+        # the IDS engine. If it crashed immediately (bad config, port in use),
+        # we don't want to start a sensor that will just be orphaned.
+        if self._web_proc and self._web_proc.poll() is not None:
+            logger.error(
+                "Web server exited during startup (code=%s) — not starting IDS engine.",
+                self._web_proc.returncode,
+            )
+            return int(self._web_proc.returncode or 1)
+
+        try:
+            self.start_ids_engine()
+        except Exception:
+            logger.error("Failed to start IDS engine — shutting down supervisor.", exc_info=True)
+            self.shutdown()
+            return 1
 
         logger.info(
             "Supervisor active — Web UI and IDS engine are separate processes. "
@@ -111,12 +139,15 @@ class ProcessSupervisor:
 
         while not self._shutdown:
             if self._web_proc and self._web_proc.poll() is not None:
+                code = self._web_proc.returncode
                 logger.error(
-                    "Web server exited with code %s — supervisor stopping.",
-                    self._web_proc.returncode,
+                    "Web server exited with code %s — supervisor stopping.", code,
                 )
                 self.shutdown()
-                return int(self._web_proc.returncode or 1)
+                # A clean exit (0) here is unexpected; treat it as failure
+                # so a caller (systemd, shell) can react to the supervisor
+                # stopping for a reason other than a signal.
+                return code if code else 1
 
             if self._ids_proc and self._ids_proc.poll() is not None:
                 code = self._ids_proc.returncode
@@ -132,4 +163,5 @@ class ProcessSupervisor:
 
             time.sleep(2.0)
 
+        self.shutdown()
         return 0

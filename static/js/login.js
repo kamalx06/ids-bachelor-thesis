@@ -11,8 +11,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (!form) return;
     
-    let allowSubmit = false;
-
     function getCsrfToken() {
         const meta = document.querySelector('meta[name="csrf-token"]');
         return meta ? meta.getAttribute("content") : "";
@@ -30,17 +28,32 @@ document.addEventListener("DOMContentLoaded", () => {
         alertBox.className = "";
     }
 
+    let _modalReturnFocus = null;
+
     function openOtpMethodModal() {
         if (!otpMethodModal) return;
+        _modalReturnFocus = document.activeElement;
         otpMethodModal.classList.remove("hidden");
         otpMethodModal.setAttribute("aria-hidden", "false");
+        if (chooseTotpBtn) chooseTotpBtn.focus();
     }
 
     function closeOtpMethodModal() {
         if (!otpMethodModal) return;
         otpMethodModal.classList.add("hidden");
         otpMethodModal.setAttribute("aria-hidden", "true");
+        if (_modalReturnFocus && typeof _modalReturnFocus.focus === "function") {
+            _modalReturnFocus.focus();
+        }
+        _modalReturnFocus = null;
     }
+
+    document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        if (otpMethodModal && !otpMethodModal.classList.contains("hidden")) {
+            closeOtpMethodModal();
+        }
+    });
 
     // Built with DOM APIs (not innerHTML + template strings) so that a
     // username/password containing HTML-special characters (", <, &, ...)
@@ -56,7 +69,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function showTotpStep(username, password) {
-        passwordStep.style.display = "none";
+        // Remove the original inputs entirely — display:none still submits
+        // them, which would post a duplicate username/password alongside the
+        // hidden copies below.
+        if (passwordStep && passwordStep.parentNode) {
+            passwordStep.remove();
+        }
         otpStepContainer.innerHTML = "";
 
         const otpInput = document.createElement("input");
@@ -80,7 +98,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function showEmailStep(username, password, maskedEmail) {
-        passwordStep.style.display = "none";
+        // See showTotpStep: remove the originals so we don't submit them twice.
+        if (passwordStep && passwordStep.parentNode) {
+            passwordStep.remove();
+        }
         otpStepContainer.innerHTML = "";
 
         const info = document.createElement("p");
@@ -125,8 +146,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     form.addEventListener("submit", async (e) => {
-        if (allowSubmit) return;
-
         // If the OTP step is already rendered, this submit is meant for
         // /login (username + password + otp + otp_method are all in the form).
         // Let the browser submit natively — do not re-run /check_totp.
@@ -138,7 +157,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         clearAlert();
 
-        const btn = form.querySelector("button[type='submit']");
+        const btn = (passwordStep || form).querySelector("button[type='submit']");
         btn.disabled = true;
         btn.textContent = "Processing...";
 
@@ -180,7 +199,8 @@ document.addEventListener("DOMContentLoaded", () => {
             const maskedEmail = payload.masked_email || "";
 
             if (!totpRequired && !emailOtpEnabled) {
-                allowSubmit = true;
+                // form.submit() bypasses this handler entirely, so no flag
+                // is needed to prevent a re-entry.
                 form.submit();
                 return;
             }
@@ -250,7 +270,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
         } catch (err) {
-            showAlert(err.message, "error");
+            showAlert(err?.message || "Login failed, please try again.", "error");
         } finally {
             btn.disabled = false;
             btn.textContent = "Next";

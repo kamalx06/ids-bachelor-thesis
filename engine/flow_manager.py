@@ -14,6 +14,7 @@ def _new_flow() -> dict:
         "fwd_bytes": 0,
         "bwd_bytes": 0,
         "start": time.time(),
+        "last_seen": time.time(),
         "destination_port": 0,
         "protocol": 0,
         "syn_flag_count": 0,
@@ -34,22 +35,24 @@ def _shard_index(key) -> int:
     return hash(key) % _FLOW_SHARDS
 
 
+_FLOW_IDLE_TIMEOUT_S = float(os.getenv("IDS_FLOW_IDLE_TIMEOUT_S", "300") or "300")
+_FLOW_EVICT_EVERY = 5000
+_flow_inserts = [0] * _FLOW_SHARDS
+
+
+def _evict_idle(flow_table, now):
+    cutoff = now - _FLOW_IDLE_TIMEOUT_S
+    stale = [k for k, f in flow_table.items() if f.get("last_seen", 0) < cutoff]
+    for k in stale:
+        flow_table.pop(k, None)
+
+
 def update_flow(key, pkt_len, dport, proto=0, tcp_layer=None, packet_time=None):
-    """
-    Update bidirectional flow stats and return a CIC-aligned feature snapshot.
-
-    Live capture uses a directional 5-tuple key, so packets on this key are counted
-    as forward; backward counts stay 0 unless reverse traffic hits a paired flow.
-
-    packet_time: epoch seconds from the frame (e.g. Scapy pkt.time); if missing, wall clock is used.
-    """
     shard = _shard_index(key)
     lock = _flow_locks[shard]
     flow_table = _flow_tables[shard]
 
     with lock:
-        flow = flow_table[key]
-
         t_now = time.time()
         if packet_time is not None:
             try:
@@ -58,6 +61,14 @@ def update_flow(key, pkt_len, dport, proto=0, tcp_layer=None, packet_time=None):
                     t_now = tf
             except (TypeError, ValueError):
                 pass
+
+        if key not in flow_table:
+            _flow_inserts[shard] += 1
+            if _flow_inserts[shard] % _FLOW_EVICT_EVERY == 0:
+                _evict_idle(flow_table, t_now)
+
+        flow = flow_table[key]
+        flow["last_seen"] = t_now
 
         if flow["fwd_packets"] == 0 and flow["bwd_packets"] == 0:
             flow["start"] = t_now

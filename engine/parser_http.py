@@ -2,7 +2,7 @@ from scapy.all import Raw
 import re
 from urllib.parse import urlparse, parse_qs
 
-REQUEST_LINE = re.compile(rb"(GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+([^\s]+)\s+HTTP")
+REQUEST_LINE = re.compile(rb"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+([^\s]+)\s+HTTP")
 HEADER_REGEX = re.compile(rb"([^:\r\n]+):\s*([^\r\n]+)")
 
 def parse_http(pkt):
@@ -14,7 +14,9 @@ def parse_http(pkt):
         data = pkt[Raw].load
 
         # --- Request line ---
-        match = REQUEST_LINE.search(data)
+        # Only treat this as HTTP if the request line is at the very start
+        # of the payload — reduces false positives on binary TCP data.
+        match = REQUEST_LINE.match(data)
         if not match:
             return None
 

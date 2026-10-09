@@ -1,9 +1,19 @@
 import math
+import os
+import threading
 import time
 from collections import defaultdict, deque
 
 
-dns_activity = defaultdict(lambda: deque(maxlen=2000))
+_DNS_SHARDS = max(16, int(os.getenv("IDS_DNS_SHARDS", "64") or "64"))
+_DNS_EVICT_AT = 10_000
+
+_dns_locks = [threading.Lock() for _ in range(_DNS_SHARDS)]
+_dns_activity = [defaultdict(lambda: deque(maxlen=2000)) for _ in range(_DNS_SHARDS)]
+
+
+def _dns_shard_index(src_ip: str) -> int:
+    return hash(src_ip) % _DNS_SHARDS
 
 # Heuristic thresholds (tunable, thesis-friendly)
 DNS_WINDOW_SECONDS = 60
@@ -28,12 +38,23 @@ def shannon_entropy(value: str) -> float:
     return ent
 
 
+_TWO_LEVEL_SUFFIXES = {
+    "co.uk", "ac.uk", "gov.uk", "org.uk",
+    "co.jp", "ne.jp", "or.jp",
+    "com.au", "net.au", "org.au",
+    "com.br", "com.cn", "com.tr",
+    # extend as needed
+}
+
 def _base_domain(qname: str) -> str:
     q = (qname or "").strip(".").lower()
     parts = [p for p in q.split(".") if p]
     if len(parts) <= 2:
         return q
-    return ".".join(parts[-2:])
+    last_two = ".".join(parts[-2:])
+    if last_two in _TWO_LEVEL_SUFFIXES and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return last_two
 
 
 def detect_dns(src_ip: str, dns_event: dict | None) -> list[str]:
@@ -44,15 +65,33 @@ def detect_dns(src_ip: str, dns_event: dict | None) -> list[str]:
     if not src_ip or not dns_event:
         return []
 
-    now = time.time()
     qname = (dns_event.get("qname") or "").strip()
     qtype = str(dns_event.get("qtype") or "").upper()
 
     if not qname:
         return []
 
-    activity = dns_activity[src_ip]
-    activity.append(
+    shard = _dns_shard_index(src_ip)
+    lock = _dns_locks[shard]
+    table = _dns_activity[shard]
+
+    with lock:
+        now = time.time()
+
+        activity = table.get(src_ip)
+        if activity is None:
+            activity = deque(maxlen=2000)
+            table[src_ip] = activity
+            if len(table) > _DNS_EVICT_AT:
+                cutoff = now - DNS_WINDOW_SECONDS
+                stale = [
+                    ip for ip, dq in table.items()
+                    if not dq or dq[-1]["time"] < cutoff
+                ]
+                for ip in stale:
+                    table.pop(ip, None)
+
+        activity.append(
         {
             "time": now,
             "qname": qname,
@@ -76,7 +115,9 @@ def detect_dns(src_ip: str, dns_event: dict | None) -> list[str]:
         reasons.append("dns_long_qname")
     if last["entropy"] >= DNS_ENTROPY_SUSPICIOUS:
         reasons.append("dns_high_entropy_qname")
-    if qtype == "TXT":
+    # A single TXT query is normal (SPF, DKIM, various CDN health checks).
+    # Only mark it when it's part of a burst or combined with high entropy.
+    if qtype == "TXT" and (last["entropy"] >= DNS_ENTROPY_SUSPICIOUS or last["len"] >= DNS_LONG_QNAME):
         reasons.append("dns_txt_query")
 
     # Window heuristics

@@ -28,6 +28,17 @@ logger = get_logger(__name__)
 _CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 _DEFAULT_TTL_SECONDS = int(os.environ.get("TI_CACHE_TTL_SECONDS", "3600") or "3600")
 
+# Opportunistic sweep: drop expired entries every N writes, amortized so
+# the hot path isn't blocked by a full scan.
+_EVICT_EVERY = 500
+_cache_writes = 0
+
+
+def _evict_expired(now: float) -> None:
+    stale = [k for k, (expires, _) in _CACHE.items() if expires <= now]
+    for k in stale:
+        _CACHE.pop(k, None)
+
 # Loaded once; reload if mtime changes
 _blocklist_mtime: float = 0.0
 _blocklist_ips: set[str] = set()
@@ -46,9 +57,14 @@ def _cache_get(indicator_type: str, indicator: str) -> dict | None:
 
 
 def _cache_set(indicator_type: str, indicator: str, value: dict, ttl_seconds: int | None = None) -> None:
+    global _cache_writes
     ttl = int(ttl_seconds or _DEFAULT_TTL_SECONDS)
     ttl = max(60, min(ttl, 24 * 3600))
-    _CACHE[(indicator_type, indicator)] = (time.time() + ttl, value)
+    now = time.time()
+    _CACHE[(indicator_type, indicator)] = (now + ttl, value)
+    _cache_writes += 1
+    if _cache_writes % _EVICT_EVERY == 0:
+        _evict_expired(now)
 
 
 def is_private_ip(ip: str) -> bool:
@@ -114,7 +130,13 @@ def _lookup_abuseipdb(ip: str) -> dict:
         headers = {"Key": REPUTATION_KEY, "Accept": "application/json"}
         params = {"ipAddress": ip, "maxAgeInDays": 90}
         r = requests.get(ABUSEIPDB_URL, headers=headers, params=params, timeout=3)
-        data = r.json() if r is not None else {}
+        if r.status_code != 200:
+            logger.warning(
+                "AbuseIPDB returned HTTP %s for %s; treating as unknown",
+                r.status_code, ip,
+            )
+            return result   # verdict stays "unknown"
+        data = r.json()
         abuse_score = float(data.get("data", {}).get("abuseConfidenceScore", 0) or 0)
         result["score"] = max(0.0, min(1.0, abuse_score / 100.0))
         result["raw"] = {
@@ -145,10 +167,16 @@ def _lookup_ip_api(ip: str) -> dict:
         return result
 
     try:
+        # NOTE: ip-api.com free tier doesn't offer HTTPS. This lookup is
+        # cleartext and can be MITM'd. It contributes only a small weight
+        # to the final score (see lookup_ip), so a forged response can at
+        # worst downgrade a suspicious IP to "safe" for one TTL window.
         url = f"http://ip-api.com/json/{ip}"
         params = {"fields": "status,message,country,isp,proxy,hosting,query"}
         r = requests.get(url, params=params, timeout=2)
-        data = r.json() if r is not None else {}
+        if r.status_code != 200:
+            return result
+        data = r.json()
         if data.get("status") != "success":
             return result
 
@@ -164,12 +192,7 @@ def _lookup_ip_api(ip: str) -> dict:
         if data.get("hosting"):
             score = max(score, 0.35)
         result["score"] = score
-        if score >= 0.5:
-            result["verdict"] = "suspicious"
-        elif score > 0:
-            result["verdict"] = "suspicious"
-        else:
-            result["verdict"] = "safe"
+        result["verdict"] = "suspicious" if score > 0 else "safe"
     except Exception:
         logger.debug("ip-api lookup failed for %s", ip, exc_info=True)
     return result
@@ -249,7 +272,10 @@ def _lookup_virustotal(domain: str, url: str) -> dict:
         url_id = requests.utils.quote(domain, safe="")
         headers = {"x-apikey": VT_KEY}
         response = requests.get(f"{VIRUSTOTAL_URL}/{url_id}", headers=headers, timeout=3)
-        data = response.json() if response is not None else {}
+        if response.status_code != 200:
+            logger.debug("VirusTotal returned HTTP %s for %s", response.status_code, domain)
+            return result
+        data = response.json()
 
         stats = data.get("data", {}).get("attributes", {}).get("last_analysis_stats", {}) or {}
         malicious = int(stats.get("malicious", 0) or 0)
@@ -300,12 +326,7 @@ def _heuristic_url_check(url: str, domain: str) -> dict:
         result["raw"]["deep_subdomain"] = True
 
     result["score"] = score
-    if score >= 0.5:
-        result["verdict"] = "suspicious"
-    elif score > 0:
-        result["verdict"] = "suspicious"
-    else:
-        result["verdict"] = "safe"
+    result["verdict"] = "suspicious" if score > 0 else "safe"
     return result
 
 

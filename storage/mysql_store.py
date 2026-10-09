@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import and_, case, delete, func, or_, select
 
-from storage.db import engine, get_session
+from storage.db import get_session
 from storage.models import AiAnalysisHistory, Base, PacketLog
 from storage.migrations import run_migrations
 
@@ -184,33 +184,43 @@ def aggregate_log_stats(
 ) -> dict:
     session = get_session()
     try:
-        stmt = select(PacketLog.classification, PacketLog.src_ip)
+        stmt = select(
+            PacketLog.classification,
+            func.count().label("cnt"),
+        ).group_by(PacketLog.classification)
         if start_time is not None:
             stmt = stmt.where(PacketLog.timestamp >= float(start_time))
         if end_time is not None:
             stmt = stmt.where(PacketLog.timestamp <= float(end_time))
 
-        rows = session.execute(stmt).all()
-
         totals = {"total": 0, "safe": 0, "suspicious": 0, "dangerous": 0}
-        unique_attackers: set[str] = set()
-        dangerous_ips: set[str] = set()
-
-        for classification, src_ip in rows:
-            totals["total"] += 1
+        for classification, cnt in session.execute(stmt).all():
+            count = int(cnt or 0)
+            totals["total"] += count
             label = (classification or "safe").lower()
             if label in totals:
-                totals[label] += 1
+                totals[label] += count
             else:
-                totals["safe"] += 1
-            if label == "dangerous" and src_ip:
-                unique_attackers.add(src_ip)
-                dangerous_ips.add(src_ip)
+                totals["safe"] += count
+
+        # Distinct dangerous source IPs — also push down to SQL.
+        dangerous_ips: list[str] = []
+        d_stmt = (
+            select(PacketLog.src_ip)
+            .where(PacketLog.classification == "dangerous")
+            .where(PacketLog.src_ip.isnot(None))
+            .distinct()
+        )
+        if start_time is not None:
+            d_stmt = d_stmt.where(PacketLog.timestamp >= float(start_time))
+        if end_time is not None:
+            d_stmt = d_stmt.where(PacketLog.timestamp <= float(end_time))
+        dangerous_ips = sorted({r[0] for r in session.execute(d_stmt).all() if r[0]})
 
         return {
             **totals,
-            "unique_attackers": len(unique_attackers),
-            "dangerous_ips": sorted(dangerous_ips),
+            "unique_attackers": len(dangerous_ips),
+            "dangerous_ips": dangerous_ips,
         }
     finally:
         session.close()

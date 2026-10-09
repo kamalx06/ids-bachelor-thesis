@@ -31,8 +31,13 @@ def _coerce_epoch_seconds(value: Any) -> float | None:
         return None
     if not math.isfinite(f) or f <= 0:
         return None
-    # Heuristic: epoch in milliseconds (common in JSON / some APIs) vs seconds.
-    if f > 1e12:
+    if not math.isfinite(f) or f <= 0:
+        return None
+    # Normalize common epoch-magnitude mistakes. Real capture times are
+    # between roughly 1e9 (2001) and 1e10 (2286) in seconds.
+    if f > 1e14:            # microseconds or higher
+        f *= 1e-6
+    elif f > 1e11:          # milliseconds
         f *= 1e-3
     return f
 

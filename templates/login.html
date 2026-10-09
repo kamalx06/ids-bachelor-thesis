@@ -20,7 +20,7 @@
         {% if error %}{{ error }}{% endif %}
     </div>
 
-    <form id="loginForm" method="POST" action="/login" autocomplete="off">
+    <form id="loginForm" method="POST" action="/login">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div id="passwordStep">
             <input 

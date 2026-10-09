@@ -459,20 +459,26 @@ document.addEventListener("DOMContentLoaded", async () => {
     const end = Math.floor(Date.now() / 1000);
     const start = end - 60 * 60;
 
-    const [series, logsEnvelope, agg, stats] = await Promise.all([
+    const [series, agg, stats] = await Promise.all([
       apiGet("/ids/traffic-timeseries", {
         start_time: start,
         end_time: end,
         minutes: 60,
       }).catch(() => null),
-      apiGet("/ids/logs", {
-        start_time: start,
-        end_time: end,
-        limit: 2000,
-      }).catch(() => []),
       apiGet("/ids/log-aggregate", { start_time: start, end_time: end }).catch(() => null),
       apiGet("/ids/stats").catch(() => null),
     ]);
+
+    // Only fetch the raw log page when the server-side timeseries came back
+    // empty; that's the only path that needs per-row detail.
+    let logsEnvelope = [];
+    if (!series || !Array.isArray(series.labels) || series.labels.length === 0) {
+      logsEnvelope = await apiGet("/ids/logs", {
+        start_time: start,
+        end_time: end,
+        limit: 2000,
+      }).catch(() => []);
+    }
 
     const logs = Array.isArray(logsEnvelope) ? logsEnvelope : [];
     const s =
@@ -795,10 +801,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    const indexByRef = new Map(rows.map((r, i) => [r, i]));
     const sorted = sortRows(rows);
-    sorted.forEach((r, idx) => {
+    sorted.forEach((r) => {
       const tr = document.createElement("tr");
-      tr.dataset.index = String(rows.indexOf(r));
+      tr.dataset.index = String(indexByRef.get(r) ?? -1);
       tr.style.cursor = "pointer";
 
       const cells = [
@@ -1056,12 +1063,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   const modalTitle = el("logDetailTitle");
   const closeBtn = el("closeLogDetail");
   if (modal && modalPre && modalTitle && closeBtn) {
-    closeBtn.addEventListener("click", () => {
-      modal.classList.remove("open");
-    });
+    const closeModal = () => modal.classList.remove("open");
+
+    closeBtn.addEventListener("click", closeModal);
     modal.addEventListener("click", (e) => {
-      if (e.target === modal) modal.classList.remove("open");
+      if (e.target === modal) closeModal();
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modal.classList.contains("open")) closeModal();
+    });
+
     el("logsTbody")?.addEventListener("click", (e) => {
       const tr = e.target.closest("tr");
       if (!tr) return;
@@ -1071,25 +1082,37 @@ document.addEventListener("DOMContentLoaded", async () => {
       modalTitle.textContent = `Event ${ev.id ?? ""}`.trim();
       modalPre.textContent = JSON.stringify(ev, null, 2);
       modal.classList.add("open");
+      closeBtn.focus();
     });
   }
 
-  try {
-    await refreshIdsHealth();
-    await refreshOverview();
-    await refreshCharts();
-  } catch (e) {
-    showAlert(e.message || "Failed to load dashboard data.", "error");
-  }
+  await Promise.allSettled([
+    refreshIdsHealth(),
+    refreshOverview(),
+    refreshCharts(),
+  ]).then((results) => {
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length) {
+      const first = failed[0].reason;
+      showAlert(first?.message || "Some dashboard data failed to load.", "error");
+    }
+  });
 
   setInterval(() => {
     refreshIdsHealth().catch(() => {});
   }, IDS_HEALTH_POLL_MS);
 
+  let sseSource = null;
+  let sseReconnectTimer = null;
+
   function connectLiveStream() {
     if (typeof EventSource === "undefined") return;
-    const source = new EventSource("/ids/stream");
-    source.addEventListener("stats", (ev) => {
+    if (sseSource) return;
+    if (sseReconnectTimer) return;
+
+    sseSource = new EventSource("/ids/stream");
+
+    sseSource.addEventListener("stats", (ev) => {
       try {
         const stats = JSON.parse(ev.data);
         setText("sumTotal", stats.total ?? 0);
@@ -1104,11 +1127,30 @@ document.addEventListener("DOMContentLoaded", async () => {
         /* ignore malformed SSE */
       }
     });
-    source.onerror = () => {
-      source.close();
-      setTimeout(connectLiveStream, 5000);
+
+    sseSource.onerror = () => {
+      if (sseSource) {
+        sseSource.close();
+        sseSource = null;
+      }
+      if (sseReconnectTimer) return;
+      sseReconnectTimer = setTimeout(() => {
+        sseReconnectTimer = null;
+        connectLiveStream();
+      }, 5000);
     };
   }
+
+  window.addEventListener("pagehide", () => {
+    if (sseSource) {
+      sseSource.close();
+      sseSource = null;
+    }
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
+  });
 
   connectLiveStream();
 

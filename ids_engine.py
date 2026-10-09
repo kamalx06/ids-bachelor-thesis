@@ -55,6 +55,7 @@ logger = get_logger(__name__)
 _queues = PacketQueues()
 _monitor = WorkerMonitor()
 _worker_threads: dict[str, threading.Thread] = {}
+_worker_cancels: dict[str, threading.Event] = {}
 _stop_event = threading.Event()
 
 
@@ -100,12 +101,13 @@ def _process_packet(packet_dict: dict) -> None:
     if dns_event:
         data["dns"] = dns_event
 
-    under_pressure = _queues.pressure() > 0.65
+    queue_pressure = _queues.pressure()
+    under_pressure = queue_pressure > 0.65
 
     result = analyze_packet(
         data,
         dns_reasons=dns_reasons,
-        queue_pressure=_queues.pressure(),
+        queue_pressure=queue_pressure,
         skip_heavy_enrichment=under_pressure,
     )
 
@@ -199,9 +201,9 @@ def _preprocess_loop(worker_id: str) -> None:
             _queues.raw_queue.task_done()
 
 
-def _worker_loop(worker_id: str) -> None:
+def _worker_loop(worker_id: str, cancel: threading.Event) -> None:
     logger.info("IDS worker %s started", worker_id)
-    while not _stop_event.is_set():
+    while not _stop_event.is_set() and not cancel.is_set():
         _monitor.heartbeat(worker_id)
         packet_dict = _queues.dequeue_packet(timeout=1.0)
         if packet_dict is None:
@@ -215,28 +217,22 @@ def _worker_loop(worker_id: str) -> None:
 def _restart_worker(worker_id: str) -> None:
     old = _worker_threads.get(worker_id)
     if old and old.is_alive():
-        return
+        # Watchdog-initiated restart: signal the old loop to exit, then
+        # start a replacement. The old thread may still be stuck inside a
+        # blocking handler (e.g. an HTTP call); we don't wait for it.
+        cancel = _worker_cancels.get(worker_id)
+        if cancel is None:
+            return
+        cancel.set()
     _monitor.register_restart(worker_id)
-    t = threading.Thread(target=_worker_loop, args=(worker_id,), daemon=True, name=worker_id)
+    cancel = threading.Event()
+    _worker_cancels[worker_id] = cancel
+    t = threading.Thread(
+        target=_worker_loop, args=(worker_id, cancel),
+        daemon=True, name=worker_id,
+    )
     _worker_threads[worker_id] = t
     t.start()
-
-
-def _log_writer_loop() -> None:
-    while not _stop_event.is_set():
-        try:
-            entry = _queues.log_queue.get(timeout=0.5)
-        except Exception:
-            persistence.flush_batches()
-            continue
-        if entry is None:
-            break
-        try:
-            persistence.enqueue_packet_log(entry)
-        except Exception:
-            logger.error("Log writer enqueue failed", exc_info=True)
-        finally:
-            _queues.log_queue.task_done()
 
 
 def _heartbeat_loop() -> None:
@@ -284,14 +280,20 @@ def start() -> None:
     )
 
     threading.Thread(target=persistence.writer_loop, args=(_stop_event,), daemon=True).start()
-    threading.Thread(target=_log_writer_loop, daemon=True).start()
     threading.Thread(target=start_sender, daemon=True).start()
     threading.Thread(target=auto_retrain, daemon=True).start()
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     worker_ids = [f"worker-{i}" for i in range(_WORKER_COUNT)]
     for wid in worker_ids:
-        _restart_worker(wid)
+        cancel = threading.Event()
+        _worker_cancels[wid] = cancel
+        t = threading.Thread(
+            target=_worker_loop, args=(wid, cancel),
+            daemon=True, name=wid,
+        )
+        _worker_threads[wid] = t
+        t.start()
 
     if _PREPROCESS_WORKERS > 0:
         for i in range(_PREPROCESS_WORKERS):
@@ -314,21 +316,35 @@ def start() -> None:
         on_captured=on_captured,
         enqueue=_queues.enqueue_packet,
         enqueue_raw=_queues.enqueue_raw_packet if use_preprocess else None,
-        should_sample=_queues.should_sample_under_pressure,
+        should_skip=_queues.should_skip_under_pressure,
     )
 
     iface = os.getenv("SNIFFER_INTERFACE", "eth0")
     bpf_filter = os.getenv("SNIFFER_BPF", "ip")
     logger.info("Starting packet capture on iface=%s filter=%s", iface, bpf_filter)
-    sniff(prn=callback, store=False, iface=iface, filter=bpf_filter)
-
+    sniff(
+        prn=callback,
+        store=False,
+        iface=iface,
+        filter=bpf_filter,
+        stop_filter=lambda _pkt: _stop_event.is_set(),
+    )
 
 if __name__ == "__main__":
+    import signal
+
     from bootstrap_db import bootstrap_database
+
+    def _handle_signal(signum, frame):
+        logger.info("IDS engine received signal %s, shutting down", signum)
+        _stop_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
 
     bootstrap_database()
     try:
         start()
-    except KeyboardInterrupt:
+    finally:
         _stop_event.set()
         persistence.shutdown_persistence()

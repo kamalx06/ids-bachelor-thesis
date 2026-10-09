@@ -98,12 +98,12 @@ def make_capture_callback(
     on_captured: Callable[[], None],
     enqueue: Callable[[dict], bool],
     enqueue_raw: Callable[[Any], bool] | None = None,
-    should_sample: Callable[[], bool],
+    should_skip: Callable[[], bool],
 ) -> Callable:
     """Build Scapy prn callback."""
 
     def capture_callback(pkt) -> None:
-        if should_sample():
+        if should_skip():
             return
 
         on_captured()

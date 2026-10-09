@@ -60,13 +60,33 @@ CSV_COLUMN_MAP: dict[str, str] = {
     "packet_length_std": "Packet Length Std",
 }
 
-MIN_ISOLATION_FOREST_SAMPLES = 50
+# 50 was the original floor and is too low for a 200-tree IsolationForest:
+# each tree would see ~25 unique points, so "isolation depth" is mostly
+# noise. 200 gives the forest enough distinct points that anomaly scoring
+# is meaningful. Retrainer keeps the existing model when the fresh benign
+# count is below this — see ai/retrainer.py::_fit_isolation_forest.
+MIN_ISOLATION_FOREST_SAMPLES = 200
+
+
+# CIC-IDS CSV uses IANA protocol numbers; the live sensor uses its own
+# encoding (see engine/feature_extractor.py). Map IANA -> sensor so the
+# training distribution matches what the classifier sees at inference.
+_IANA_TO_SENSOR_PROTOCOL = {
+    6: 1,    # TCP
+    17: 2,   # UDP
+    1: 3,    # ICMP
+}
 
 
 def derive_protocol(data: pd.DataFrame) -> pd.Series:
-    """Map to sensor encoding: 0=other, 1=TCP, 2=UDP."""
+    """Map to sensor encoding: 0=other, 1=TCP, 2=UDP, 3=ICMP."""
     if "Protocol" in data.columns:
-        return data["Protocol"]
+        return (
+            data["Protocol"]
+            .map(_IANA_TO_SENSOR_PROTOCOL)
+            .fillna(0)
+            .astype(int)
+        )
 
     flag_cols = [CSV_COLUMN_MAP[k] for k in (
         "syn_flag_count",

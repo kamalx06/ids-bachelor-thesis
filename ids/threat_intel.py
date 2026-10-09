@@ -47,7 +47,8 @@ def enrich(
         block = check_blocklist(src_ip)
         if block:
             ti_ip = block
-            reasons.append("reputation_ip_malicious")
+            if "reputation_ip_malicious" not in reasons:
+                reasons.append("reputation_ip_malicious")
 
     threshold = _TI_MIN_SCORE
     if not model_trusted:

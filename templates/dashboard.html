@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Enterprise AI IDS Dashboard</title>
-<meta name="csrf-token" content="{{ csrf_token() }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -29,7 +28,8 @@
     </div>
     <nav class="dash-nav" aria-label="Main">
         <a href="/dashboard" class="dash-nav-link is-active">Monitoring</a>
-        {% if current_user.is_authenticated and current_user.role|lower == "admin" %}
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
         <a href="/admin" class="dash-nav-link">Admin</a>
         {% endif %}
         <a href="/settings" class="dash-nav-link">Settings</a>
@@ -119,8 +119,8 @@
                 <div class="dash-chart-wrap dash-chart-wrap--compact"><canvas id="distributionChart" height="120"></canvas></div>
             </article>
             <article class="card dash-chart-card">
-                <h3 class="dash-chart-title">Risk score trend</h3>
-                <p class="dash-chart-sub">Average AI score</p>
+                <h3 class="dash-chart-title">AI score trend</h3>
+                <p class="dash-chart-sub">Average model output (raw RF / ISO)</p>
                 <div class="dash-chart-wrap"><canvas id="riskTrendChart" height="120"></canvas></div>
             </article>
             <article class="card dash-chart-card">

@@ -4,6 +4,7 @@ import os
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import Any
 
 import dotenv
 
@@ -18,11 +19,10 @@ ZEEK_LOG_DIR = os.environ.get("ZEEK_LOG_DIR")
 ZEEK_NOTICE_LOG = os.environ.get("ZEEK_NOTICE_LOG")
 ZEEK_WEIRD_LOG = os.environ.get("ZEEK_WEIRD_LOG")
 
-# Per-IP connection cache and incremental read offsets per log file
+# Per-IP connection cache and incremental read state per log file
 _ip_conn_cache: dict[str, deque] = defaultdict(lambda: deque(maxlen=5000))
 _notice_hits: dict[str, list[dict]] = defaultdict(list)
 _weird_hits: dict[str, list[dict]] = defaultdict(list)
-_file_positions: dict[str, int] = {}
 
 # Structured lookup cache (short TTL)
 _lookup_cache: dict[str, tuple[float, dict]] = {}
@@ -88,7 +88,11 @@ def _parse_tsv_line(line: str, headers: list[str]) -> dict | None:
     return dict(zip(headers, fields))
 
 
-def _read_zeek_headers(f) -> list[str] | None:
+# Track (mtime, size) alongside position so rotation/truncation is detectable.
+_file_state: dict[str, tuple[float, int, int]] = {}
+
+
+def _read_headers_at(f) -> list[str] | None:
     """Find #fields line in Zeek log header block."""
     pos = f.tell()
     headers = None
@@ -104,45 +108,56 @@ def _read_zeek_headers(f) -> list[str] | None:
 
 
 def _tail_read_log(path: Path, handler) -> None:
-    """Incrementally read new TSV rows from a Zeek log."""
+    """Incrementally read new TSV rows from a Zeek log.
+
+    Tolerates rotation: if mtime goes backwards or size shrinks, the file
+    was truncated/replaced and we restart from the header block.
+    """
     key = str(path.resolve())
     if not path.is_file():
         return
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            pos = _file_positions.get(key, 0)
-            if pos == 0:
-                headers = _read_zeek_headers(f)
-                if not headers:
-                    return
-                _file_positions[key] = f.tell()
-                pos = f.tell()
-            else:
-                f.seek(0)
-                headers = _read_zeek_headers(f)
-                if not headers:
-                    return
-                f.seek(pos)
+        st = path.stat()
+        prev = _file_state.get(key)
+        pos = prev[2] if prev else 0
+        if prev and (st.st_mtime < prev[0] or st.st_size < prev[1]):
+            # Rotated or truncated: restart from beginning.
+            pos = 0
 
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            headers = _read_headers_at(f)
+            if not headers:
+                return
+            header_end = f.tell()
+
+            if pos < header_end:
+                pos = header_end
+
+            f.seek(pos)
             for line in f:
                 if line.startswith("#") or not line.strip():
                     continue
                 row = _parse_tsv_line(line, headers)
                 if row:
                     handler(row)
-            _file_positions[key] = f.tell()
+
+            _file_state[key] = (st.st_mtime, st.st_size, f.tell())
     except Exception:
         logger.error("Zeek log read failed: %s", path, exc_info=True)
 
 
 def _ingest_conn(row: dict) -> None:
+    """Store each connection only against its origin (id.orig_h).
+
+    Direction matters: _analyze_connections() interprets resp_ports, short
+    lifetimes, and REJ/S0 states as attacker behavior, which is only valid
+    for the side that initiated. Storing the flow against the responder as
+    well would flag every victim of a scan.
+    """
     src = row.get("id.orig_h")
-    dst = row.get("id.resp_h")
     if src:
         _ip_conn_cache[src].append(row)
-    if dst and dst != src:
-        _ip_conn_cache[dst].append(row)
 
 
 def _ingest_notice(row: dict) -> None:
@@ -165,7 +180,24 @@ def _ingest_weird(row: dict) -> None:
             _weird_hits[ip] = _weird_hits[ip][-200:]
 
 
+_last_cache_update: float = 0.0
+_CACHE_UPDATE_INTERVAL = float(os.environ.get("ZEEK_UPDATE_INTERVAL_SEC", "5") or "5")
+
+
 def update_cache() -> None:
+    """Read new rows from Zeek logs, throttled to _CACHE_UPDATE_INTERVAL.
+
+    Without this throttle, lookup_ip() calls update_cache() on every cache
+    miss -- on a busy network with rotating source IPs that's a file read
+    per packet. 5s is a reasonable default: Zeek's own writes are buffered
+    by the OS, so sub-second polling wouldn't see fresh rows anyway.
+    """
+    global _last_cache_update
+    now = time.time()
+    if now - _last_cache_update < _CACHE_UPDATE_INTERVAL:
+        return
+    _last_cache_update = now
+
     paths = _resolve_log_paths()
     if paths["conn"]:
         _tail_read_log(paths["conn"], _ingest_conn)
@@ -173,6 +205,53 @@ def update_cache() -> None:
         _tail_read_log(paths["notice"], _ingest_notice)
     if paths["weird"]:
         _tail_read_log(paths["weird"], _ingest_weird)
+
+    _evict_stale_entries(now)
+
+
+_MAX_IDLE_SEC = float(os.environ.get("ZEEK_CACHE_IDLE_SEC", str(3600)) or "3600")
+
+
+def _evict_stale_entries(now: float) -> None:
+    """Drop per-IP state for IPs with no recent Zeek activity.
+
+    Called from update_cache(), which already runs on a 5s throttle, so
+    this sweep is amortized across normal traffic.
+    """
+    cutoff = now - _MAX_IDLE_SEC
+
+    def _last_ts_from_row(entry: Any) -> float:
+        if isinstance(entry, dict):
+            raw = entry.get("ts")
+            try:
+                return float(raw) if raw is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    for cache in (_notice_hits, _weird_hits):
+        stale = [
+            ip for ip, hits in cache.items()
+            if not hits or _last_ts_from_row(hits[-1]) < cutoff
+        ]
+        for ip in stale:
+            cache.pop(ip, None)
+
+    stale_lookups = [
+        ip for ip, (expires, _) in _lookup_cache.items()
+        if expires < now
+    ]
+    for ip in stale_lookups:
+        _lookup_cache.pop(ip, None)
+
+    # _ip_conn_cache uses deques with maxlen, so per-IP cost is bounded;
+    # but the number of IPs still grows. Drop empty or idle entries.
+    stale_conns = [
+        ip for ip, dq in _ip_conn_cache.items()
+        if not dq or _last_ts_from_row(dq[-1]) < cutoff
+    ]
+    for ip in stale_conns:
+        _ip_conn_cache.pop(ip, None)
 
 
 def _analyze_connections(ip: str, connections: deque) -> tuple[float, list[str]]:

@@ -130,12 +130,19 @@ def _wait_for_web_ui() -> bool:
     return False
 
 
+# Backoff cap: at most this many multiples of SEND_INTERVAL between retries
+# during a sustained outage. Keeps recovery quick but stops hammering.
+_MAX_BACKOFF_MULTIPLIER = 12
+
+
 def start_sender():
     _wait_for_web_ui()
 
     consecutive_failures = 0
 
     while True:
+        sleep_for = SEND_INTERVAL
+
         try:
             if not _SAFE_API_URL:
                 time.sleep(SEND_INTERVAL)
@@ -165,12 +172,20 @@ def start_sender():
                 )
         except requests.exceptions.HTTPError as exc:
             consecutive_failures += 1
-            logger.warning(
-                "Telemetry POST failed: HTTP %s",
-                getattr(exc.response, "status_code", "?"),
-            )
+            status = getattr(exc.response, "status_code", "?")
+            if status == 401:
+                logger.error(
+                    "Telemetry rejected (401). IDS_SENSOR_TOKEN on this process "
+                    "does not match the Web UI's. Set the same value in .env on both."
+                )
+            else:
+                logger.warning("Telemetry POST failed: HTTP %s", status)
         except Exception:
             consecutive_failures += 1
             logger.error("Sender error while posting telemetry", exc_info=True)
 
-        time.sleep(SEND_INTERVAL)
+        if consecutive_failures > 0:
+            sleep_for = SEND_INTERVAL * min(
+                consecutive_failures, _MAX_BACKOFF_MULTIPLIER
+            )
+        time.sleep(sleep_for)

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics — AI IDS</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/main.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous"></script>
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>Threat Analytics</h1>
+            <p class="dash-tagline">Recurring patterns and weekly trends</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        <a href="/analytics" class="dash-nav-link is-active">Analytics</a>
+        {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <div id="analyticsAlert" class="" aria-live="polite"></div>
+
+    <section class="dash-charts-section" aria-label="Summary">
+        <div class="dash-section-head">
+            <h2>Weekly overview</h2>
+            <p class="dash-section-desc">Aggregated from all suspicious and dangerous events.</p>
+        </div>
+        <article class="card dash-chart-card dash-chart-card--wide">
+            <h3 class="dash-chart-title">Weekly totals</h3>
+            <p class="dash-chart-sub">Dangerous vs. suspicious events per week</p>
+            <div class="dash-chart-wrap"><canvas id="weeklySummaryChart" height="100"></canvas></div>
+        </article>
+    </section>
+
+    <section class="dash-charts-section" aria-label="Detected patterns">
+        <div class="dash-section-head">
+            <h2>Recurring patterns</h2>
+            <p class="dash-section-desc">Attackers that come back on a predictable schedule.</p>
+        </div>
+        <div id="patternsGrid" class="analytics-patterns-grid">
+            <p class="empty">Loading patterns…</p>
+        </div>
+    </section>
+
+    <section class="dash-charts-section" aria-label="Heatmap">
+        <div class="dash-section-head">
+            <h2>Weekly activity heatmap</h2>
+            <p class="dash-section-desc">Dangerous events by day of week and hour of day.</p>
+        </div>
+        <article class="card dash-chart-card dash-chart-card--wide">
+            <div class="analytics-heatmap-controls">
+                <label for="heatmapWeeks">Weeks:</label>
+                <select id="heatmapWeeks">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="4" selected>4</option>
+                    <option value="8">8</option>
+                    <option value="12">12</option>
+                </select>
+            </div>
+            <div id="heatmapContainer" class="analytics-heatmap"></div>
+        </article>
+    </section>
+
+    <section class="dash-charts-section" aria-label="Recurring actors">
+        <div class="dash-section-head">
+            <h2>Recurring attackers</h2>
+            <p class="dash-section-desc">Source IPs seen across multiple days.</p>
+        </div>
+        <div class="dash-charts-grid">
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Top threat categories</h3>
+                <p class="dash-chart-sub">Ranked by total events</p>
+                <div class="dash-chart-wrap"><canvas id="topThreatsChart" height="120"></canvas></div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Recurring source IPs</h3>
+                <p class="dash-chart-sub">Appeared on 3+ distinct days</p>
+                <div class="analytics-table-wrap">
+                    <table class="dash-table">
+                        <thead>
+                            <tr>
+                                <th>IP</th>
+                                <th>Days</th>
+                                <th>Events</th>
+                                <th>Dangerous</th>
+                                <th>Worst</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recurringIpsTbody">
+                            <tr><td colspan="5" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </article>
+            <article class="card dash-chart-card">
+                <h3 class="dash-chart-title">Recurring hosts</h3>
+                <p class="dash-chart-sub">Appeared on 3+ distinct days</p>
+                <div class="analytics-table-wrap">
+                    <table class="dash-table">
+                        <thead>
+                            <tr>
+                                <th>Host</th>
+                                <th>Days</th>
+                                <th>Events</th>
+                                <th>Dangerous</th>
+                                <th>Worst</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recurringHostsTbody">
+                            <tr><td colspan="5" class="empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </article>
+        </div>
+    </section>
+</main>
+
+<script src="/static/js/analytics.js"></script>
+</body>
+</html>

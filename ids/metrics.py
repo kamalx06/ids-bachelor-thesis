@@ -24,20 +24,33 @@ def set_gauge(name: str, value: float, labels: dict[str, str] | None = None) -> 
         _gauges[key] = value
 
 
+def _escape_label(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _key(name: str, labels: dict[str, str] | None) -> str:
     if not labels:
         return name
-    parts = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+    parts = ",".join(f'{k}="{_escape_label(v)}"' for k, v in sorted(labels.items()))
     return f"{name}{{{parts}}}"
 
 
 def export_prometheus() -> str:
     lines: list[str] = []
+    emitted_types: set[tuple[str, str]] = set()
     with _lock:
         for key, val in sorted(_counters.items()):
-            lines.append(f"# TYPE {key.split('{')[0]} counter")
+            name = key.split("{", 1)[0]
+            t = (name, "counter")
+            if t not in emitted_types:
+                lines.append(f"# TYPE {name} counter")
+                emitted_types.add(t)
             lines.append(f"{key} {val}")
         for key, val in sorted(_gauges.items()):
-            lines.append(f"# TYPE {key.split('{')[0]} gauge")
+            name = key.split("{", 1)[0]
+            t = (name, "gauge")
+            if t not in emitted_types:
+                lines.append(f"# TYPE {name} gauge")
+                emitted_types.add(t)
             lines.append(f"{key} {val}")
     return "\n".join(lines) + "\n"

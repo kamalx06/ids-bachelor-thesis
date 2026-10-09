@@ -14,16 +14,141 @@ ROOT = Path(__file__).resolve().parent
 _BOOTSTRAP_DONE = False
 _DB_NAME_RE = re.compile(r"[A-Za-z0-9_]+")
 
+# ---------------------------------------------------------------------------
+# IDS MySQL schema (formerly scripts/sql/migrate_ids_schema.sql)
+# Compatible with MariaDB / MySQL 8+.
+# ---------------------------------------------------------------------------
+IDS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS ids_statistics (
+    id INT PRIMARY KEY DEFAULT 1,
+    total_events BIGINT NOT NULL DEFAULT 0,
+    safe_count BIGINT NOT NULL DEFAULT 0,
+    suspicious_count BIGINT NOT NULL DEFAULT 0,
+    dangerous_count BIGINT NOT NULL DEFAULT 0,
+    unique_attackers_count INT NOT NULL DEFAULT 0,
+    dangerous_ips_count INT NOT NULL DEFAULT 0,
+    unique_attackers_json LONGTEXT NULL,
+    dangerous_ips_json LONGTEXT NULL,
+    dangerous_urls_json LONGTEXT NULL,
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-def _run_sql_file(connection, file_path: Path) -> None:
-    if not file_path.exists():
-        logger.warning("SQL file not found: %s", file_path)
-        return
+INSERT IGNORE INTO ids_statistics (id) VALUES (1);
 
-    sql = file_path.read_text(encoding="utf-8")
-    # Strip each candidate statement once (not once to test it, once more to
-    # use it) and skip the empties left by trailing/blank `;` separators.
+CREATE TABLE IF NOT EXISTS packet_logs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    timestamp DOUBLE NOT NULL,
+    captured_at_ms BIGINT NULL,
+    src_ip VARCHAR(45) NULL,
+    dst_ip VARCHAR(45) NULL,
+    src_port INT NULL,
+    dst_port INT NULL,
+    protocol VARCHAR(16) NULL,
+    duration DOUBLE NULL,
+    packets INT NULL,
+    bytes INT NULL,
+    url TEXT NULL,
+    classification VARCHAR(16) NOT NULL,
+    ai_label VARCHAR(16) NULL,
+    confidence DOUBLE NULL,
+    anomaly_score DOUBLE NULL,
+    ai_score DOUBLE NULL,
+    risk_score DOUBLE NULL,
+    reasons_json LONGTEXT NULL,
+    ti_ip_json LONGTEXT NULL,
+    ti_url_json LONGTEXT NULL,
+    http_json LONGTEXT NULL,
+    dns_json LONGTEXT NULL,
+    payload_preview TEXT NULL,
+    ai_explanation_json LONGTEXT NULL,
+    INDEX ix_packet_logs_timestamp (timestamp),
+    INDEX ix_packet_logs_ts_cls (timestamp, classification),
+    INDEX ix_packet_logs_src_ts (src_ip, timestamp),
+    INDEX ix_packet_logs_classification (classification),
+    INDEX ix_packet_logs_dst_port (dst_port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_analysis_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    analyzed_at DATETIME(6) NOT NULL,
+    src_ip VARCHAR(45) NULL,
+    dst_ip VARCHAR(45) NULL,
+    classification VARCHAR(16) NOT NULL,
+    ai_score DOUBLE NULL,
+    risk_score DOUBLE NULL,
+    rf_prob DOUBLE NULL,
+    anomaly_strength DOUBLE NULL,
+    features_json LONGTEXT NULL,
+    explanation_json LONGTEXT NULL,
+    INDEX ix_ai_history_ts (analyzed_at),
+    INDEX ix_ai_history_src (src_ip)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS threat_intel_cache (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    lookup_key VARCHAR(512) NOT NULL,
+    lookup_type VARCHAR(16) NOT NULL,
+    verdict VARCHAR(32) NULL,
+    score DOUBLE NULL,
+    payload_json LONGTEXT NULL,
+    cached_at DATETIME(6) NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    UNIQUE KEY uq_ti_lookup (lookup_key, lookup_type),
+    INDEX ix_ti_expires (expires_at),
+    INDEX ix_ti_key (lookup_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS dangerous_ips (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    first_seen DATETIME(6) NOT NULL,
+    last_seen DATETIME(6) NOT NULL,
+    event_count INT NOT NULL DEFAULT 1,
+    max_risk_score DOUBLE NULL,
+    reasons_json LONGTEXT NULL,
+    UNIQUE KEY uq_dangerous_ip (ip_address),
+    INDEX ix_dangerous_ip (ip_address)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS training_data (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    created_at DOUBLE NOT NULL,
+    features_json LONGTEXT NOT NULL,
+    label VARCHAR(32) NOT NULL,
+    INDEX ix_training_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS threat_patterns (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    bucket_type VARCHAR(16) NOT NULL,
+    bucket_start DOUBLE NOT NULL,
+    src_ip VARCHAR(45) NULL,
+    host VARCHAR(255) NULL,
+    threat_category VARCHAR(64) NULL,
+    event_count INT NOT NULL DEFAULT 0,
+    dangerous_count INT NOT NULL DEFAULT 0,
+    suspicious_count INT NOT NULL DEFAULT 0,
+    max_risk_score DOUBLE NULL,
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    INDEX ix_tp_bucket (bucket_type, bucket_start),
+    INDEX ix_tp_ip (src_ip, bucket_start),
+    INDEX ix_tp_host (host, bucket_start),
+    INDEX ix_tp_category (threat_category, bucket_start),
+    INDEX ix_tp_lookup (bucket_type, src_ip, host, threat_category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+
+def _run_sql(connection, sql: str, *, label: str = "schema", strict: bool = True) -> None:
+    """
+    Execute a raw SQL blob statement-by-statement.
+
+    Splitting on ';' is fine for the current DDL. If you later add triggers
+    or stored procedures containing ';', pass a pre-parsed statement list
+    instead.
+    """
     statements = [stmt for raw in sql.split(";") if (stmt := raw.strip())]
+    errors: list[tuple[str, Exception]] = []
 
     with connection.cursor() as cur:
         for stmt in statements:
@@ -31,11 +156,15 @@ def _run_sql_file(connection, file_path: Path) -> None:
                 cur.execute(stmt)
             except Exception as exc:
                 logger.warning(
-                    "SQL statement failed, continuing with the rest of %s: %s -- %s",
-                    file_path.name,
+                    "SQL statement failed in %s: %s -- %s",
+                    label,
                     exc,
                     stmt[:200],
                 )
+                errors.append((stmt, exc))
+
+    if strict and errors:
+        raise RuntimeError(f"{len(errors)} SQL statement(s) failed in {label}")
 
 
 @contextmanager
@@ -87,7 +216,7 @@ def _validate_db_name(db: str) -> bool:
 
 
 def _bootstrap_mysql_database() -> bool:
-    """Create MySQL database and apply raw SQL migrations."""
+    """Create MySQL database and apply the embedded schema."""
     mysql_cfg = _get_mysql_env()
     if not _validate_db_name(mysql_cfg["db"]):
         logger.error("Invalid MySQL database name: %s", mysql_cfg["db"])
@@ -111,9 +240,8 @@ def _bootstrap_mysql_database() -> bool:
                 )
                 connection.select_db(mysql_cfg["db"])
 
-            migration_file = ROOT / "scripts" / "sql" / "migrate_ids_schema.sql"
-            logger.info("Applying SQL migration: %s", migration_file)
-            _run_sql_file(connection, migration_file)
+            logger.info("Applying embedded IDS MySQL schema")
+            _run_sql(connection, IDS_SCHEMA_SQL, label="IDS_SCHEMA_SQL")
         finally:
             connection.close()
         return True
