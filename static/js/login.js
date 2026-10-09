@@ -159,7 +159,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const btn = (passwordStep || form).querySelector("button[type='submit']");
         btn.disabled = true;
-        btn.textContent = "Processing...";
+        // Only update the label span so the trailing SVG arrow survives.
+        const btnLabel = btn.querySelector("span");
+        if (btnLabel) {
+            btnLabel.textContent = "Processing...";
+        } else {
+            btn.textContent = "Processing...";
+        }
 
         const usernameInput = form.querySelector("input[name='username']");
         const passwordInput = form.querySelector("input[name='password']");
@@ -273,7 +279,12 @@ document.addEventListener("DOMContentLoaded", () => {
             showAlert(err?.message || "Login failed, please try again.", "error");
         } finally {
             btn.disabled = false;
-            btn.textContent = "Next";
+            const btnLabel = btn.querySelector("span");
+            if (btnLabel) {
+                btnLabel.textContent = "Continue";
+            } else {
+                btn.textContent = "Continue";
+            }
         }
     });
 });

@@ -2,61 +2,154 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in — Enterprise AI IDS</title>
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/main.css">
 </head>
-<body class="centered">
+<body class="login-page">
+<div class="login-bg" aria-hidden="true"></div>
 
-<div class="card">
-    <h2>Login</h2>
-    <p class="small">Sign in to your account</p>
+<div class="login-layout">
 
-    <div 
-        id="formAlert" 
-        aria-live="polite" 
-        class="{% if error %}alert error{% endif %}"
-    >
-        {% if error %}{{ error }}{% endif %}
-    </div>
-
-    <form id="loginForm" method="POST" action="/login">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div id="passwordStep">
-            <input 
-                type="text"
-                name="username" 
-                placeholder="Username" 
-                required 
-                maxlength="30">
-            <input 
-                type="password" 
-                name="password" 
-                placeholder="Password" 
-                required 
-                autocomplete="current-password">
-            <button type="submit">Next</button>
+    <!-- Brand panel -->
+    <aside class="login-brand" aria-hidden="true">
+        <div class="login-brand-top">
+            <span class="login-logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                    <path d="M12 12l9-5M12 12v10M12 12L3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                </svg>
+            </span>
+            <span class="login-brand-name">Enterprise AI IDS</span>
         </div>
 
-        <div id="otpStepContainer"></div>
-    </form>
+        <div class="login-brand-hero">
+            <h1>Intrusion Detection,<br/>Reimagined with AI</h1>
+            <p>Hybrid machine learning, behavioral heuristics, and threat intelligence in one integrated SOC platform.</p>
+        </div>
 
-    <div id="otpMethodModal" class="modal-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="otpMethodTitle">
-        <div class="modal">
-            <h3 id="otpMethodTitle">Choose verification method</h3>
-            <p class="small">Select how you want to complete 2-step verification.</p>
-            <div class="button-row">
-                <button type="button" data-otp-method="totp" id="chooseTotpMethod">
-                    Use authenticator app
-                </button>
-                <button type="button" class="secondary" data-otp-method="email" id="chooseEmailMethod">
-                    Send code to <span id="otpMaskedEmail"></span>
-                </button>
+        <ul class="login-features">
+            <li>
+                <span class="login-feature-dot"></span>
+                <div>
+                    <strong>Hybrid AI scoring</strong>
+                    <span>Random Forest + Isolation Forest fused with behavioral signals</span>
+                </div>
+            </li>
+            <li>
+                <span class="login-feature-dot"></span>
+                <div>
+                    <strong>Live monitoring</strong>
+                    <span>Real-time traffic charts and Server-Sent Events</span>
+                </div>
+            </li>
+            <li>
+                <span class="login-feature-dot"></span>
+                <div>
+                    <strong>Threat analytics</strong>
+                    <span>Recurring actor detection and MITRE ATT&amp;CK coverage</span>
+                </div>
+            </li>
+            <li>
+                <span class="login-feature-dot"></span>
+                <div>
+                    <strong>Secure by default</strong>
+                    <span>Argon2 · TOTP · email OTP · role-based access</span>
+                </div>
+            </li>
+        </ul>
+
+        <footer class="login-brand-footer">
+            <span>© Kamal Khalilov</span>
+            <span class="login-brand-sep">·</span>
+            <span>Bachelor Thesis Project</span>
+        </footer>
+    </aside>
+
+    <!-- Form panel -->
+    <main class="login-main">
+        <div class="login-card">
+
+            <header class="login-card-head">
+                <h2>Welcome back</h2>
+                <p>Sign in to access the SOC dashboard.</p>
+            </header>
+
+            <div
+                id="formAlert"
+                aria-live="polite"
+                class="{% if error %}alert error{% endif %}"
+            >
+                {% if error %}{{ error }}{% endif %}
             </div>
-            <button type="button" class="link-button" id="cancelOtpChoice">Cancel</button>
-        </div>
-    </div>
 
+            <form id="loginForm" method="POST" action="/login" class="login-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <div id="passwordStep" class="login-step">
+                    <div class="login-field">
+                        <label for="loginUsername">Username</label>
+                        <input
+                            id="loginUsername"
+                            type="text"
+                            name="username"
+                            placeholder="your.username"
+                            required
+                            maxlength="30"
+                            autocomplete="username"
+                            autofocus>
+                    </div>
+
+                    <div class="login-field">
+                        <label for="loginPassword">Password</label>
+                        <input
+                            id="loginPassword"
+                            type="password"
+                            name="password"
+                            placeholder="••••••••••••"
+                            required
+                            autocomplete="current-password">
+                    </div>
+
+                    <button type="submit" class="login-submit">
+                        <span>Continue</span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div id="otpStepContainer"></div>
+            </form>
+
+            <p class="login-footnote">
+                Protected by multi-factor authentication and rate limiting.
+                Sessions expire after 60 minutes of inactivity.
+            </p>
+
+        </div>
+    </main>
+</div>
+
+<!-- 2FA method chooser (kept outside the layout grid so it can overlay freely) -->
+<div id="otpMethodModal" class="modal-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="otpMethodTitle">
+    <div class="modal login-modal">
+        <h3 id="otpMethodTitle">Choose verification method</h3>
+        <p class="small">Select how you want to complete 2-step verification.</p>
+        <div class="button-row">
+            <button type="button" data-otp-method="totp" id="chooseTotpMethod">
+                Use authenticator app
+            </button>
+            <button type="button" class="secondary" data-otp-method="email" id="chooseEmailMethod">
+                Send code to <span id="otpMaskedEmail"></span>
+            </button>
+        </div>
+        <button type="button" class="link-button" id="cancelOtpChoice">Cancel</button>
+    </div>
 </div>
 
 <script src="/static/js/login.js"></script>

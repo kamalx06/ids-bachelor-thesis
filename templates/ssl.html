@@ -97,12 +97,28 @@
                 <tr><th>Serial</th><td><code id="caSerial">—</code></td></tr>
                 <tr><th>Valid from</th><td id="caNotBefore">—</td></tr>
                 <tr><th>Valid until</th><td id="caNotAfter">—</td></tr>
-                <tr><th>SHA-256 fingerprint</th><td><code style="word-break: break-all;" id="caFingerprint">—</code></td></tr>
+                <tr>
+                    <th>SHA-256 fingerprint</th>
+                    <td>
+                        <code
+                            id="caFingerprint"
+                            class="ssl-fingerprint"
+                            role="button"
+                            tabindex="0"
+                            title="Click to copy"
+                            aria-label="SHA-256 fingerprint — click to copy"
+                        >—</code>
+                    </td>
+                </tr>
             </tbody>
         </table>
-        <div class="dash-search-actions" style="margin-top: 16px;">
-            <a class="primary dash-btn" href="/ssl/api/ca/cert.pem" download>Download CA (PEM)</a>
-            <button class="secondary dash-btn" id="regenerateCaBtn" type="button">Regenerate CA</button>
+        <div class="ssl-ca-actions">
+            <a class="primary dash-btn" href="/ssl/api/ca/cert.pem" download>
+                <span aria-hidden="true">↓</span> Download CA (PEM)
+            </a>
+            <button class="secondary dash-btn" id="regenerateCaBtn" type="button">
+                <span aria-hidden="true">↻</span> Regenerate CA
+            </button>
         </div>
     </section>
 
@@ -110,20 +126,12 @@
         <div class="dash-section-head">
             <h2>Client trust installation</h2>
             <p class="dash-section-desc">
-                Download the root CA from the button above, then install it on every client
-                that should be inspected. Without this step, browsers and applications will
-                show certificate warnings on every HTTPS site. Pick the section that matches
-                the client operating system.
+                Use the <strong>Download CA (PEM)</strong> button in the Root certificate
+                authority card above to save the file, then install it on every client that
+                should be inspected. Without this step, browsers and applications will show
+                certificate warnings on every HTTPS site. Pick the section that matches the
+                client operating system.
             </p>
-        </div>
-
-        <div class="ssl-guide-actions" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;">
-            <a class="primary dash-btn" href="/ssl/api/ca/cert.pem" download>
-                <span aria-hidden="true">↓</span> Download CA (PEM)
-            </a>
-            <button class="secondary dash-btn" id="copyFingerprintBtn" type="button">
-                Copy SHA-256 fingerprint
-            </button>
         </div>
 
         <div class="ssl-guide-os">

@@ -34,6 +34,43 @@ function fmtDate(v) {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
+async function copyFingerprintInPlace(el) {
+  const original = (el.textContent || "").trim();
+  if (!original || original === "—") return;
+
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(original);
+      ok = true;
+    } else {
+      // Fallback for non-secure contexts (plain http://localhost dev)
+      const ta = document.createElement("textarea");
+      ta.value = original;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok = true;
+    }
+  } catch (_) {
+    ok = false;
+  }
+
+  if (!ok) return;
+
+  // Swap the text for a brief confirmation, then restore. The
+  // class toggles a color change so the whole row flashes green.
+  el.classList.add("is-copied");
+  el.textContent = "Copied to clipboard";
+  setTimeout(() => {
+    el.textContent = original;
+    el.classList.remove("is-copied");
+  }, 1400);
+}
+
 async function refreshBypassSyncStatus() {
   const host = el("bypassSyncStatus");
   if (!host) return;
@@ -133,34 +170,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (e) { showAlert(e.message, "error"); }
   });
 
-  el("copyFingerprintBtn")?.addEventListener("click", async () => {
-    const fp = (el("caFingerprint")?.textContent || "").trim();
-    if (!fp || fp === "—") {
-      showAlert("Fingerprint not available yet. Load the CA metadata first.", "error");
-      return;
-    }
-
-    // Prefer the modern async clipboard API; fall back to a hidden
-    // textarea + execCommand for non-secure contexts (older browsers,
-    // plain http://localhost during development).
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(fp);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = fp;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+  // Click-to-copy on the fingerprint value itself. Feedback is in-place
+  // (the text briefly becomes "Copied to clipboard") so nothing appears
+  // in the page-level alert region for a purely local action.
+  const fpEl = el("caFingerprint");
+  if (fpEl) {
+    const triggerCopy = () => copyFingerprintInPlace(fpEl);
+    fpEl.addEventListener("click", triggerCopy);
+    fpEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        triggerCopy();
       }
-      showAlert("SHA-256 fingerprint copied to clipboard.", "success");
-    } catch (e) {
-      showAlert("Could not copy — select the fingerprint manually from the table.", "error");
-    }
-  });
+    });
+  }
 
   el("addBypassBtn")?.addEventListener("click", async () => {
     const match_type = el("bpType").value;

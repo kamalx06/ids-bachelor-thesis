@@ -374,6 +374,8 @@ if (avatarInput) {
         if (avatarPreview) {
             avatarPreview.src = url;
         } else if (avatarInitials) {
+            // Preserve the hero wrapper's styling when swapping the
+            // initials div for a preview image.
             var img = document.createElement("img");
             img.id = "avatarPreview";
             img.alt = "Profile picture";

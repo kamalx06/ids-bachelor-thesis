@@ -4,7 +4,7 @@ function showAlert(message, type = "info") {
   const box = el("auditAlert");
   if (!box) return;
   box.textContent = message || "";
-  box.className = message ? `alert ${type}` : "";
+  box.className = message ? `alert ${type}` : "audit-alert-hidden";
 }
 
 async function apiGet(path, params = {}) {
@@ -48,38 +48,83 @@ function renderTable(rows) {
     return;
   }
 
-  rows.forEach((r, idx) => {
+  rows.forEach((r) => {
     const tr = document.createElement("tr");
-    tr.style.cursor = "pointer";
-    const target = r.target_type ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}` : "—";
-    const values = [
-      fmtTs(r.ts),
-      r.actor_username || (r.actor_id ? `user #${r.actor_id}` : "—"),
-      r.action,
-      target,
-      r.outcome,
-      r.actor_ip || "—",
-    ];
-    values.forEach((v, i) => {
-      const td = document.createElement("td");
-      if (i === 4) {
-        const span = document.createElement("span");
-        span.className = "tag-pill";
-        if (r.outcome === "failure") {
-          span.style.borderColor = "#7f1d1d"; span.style.background = "#1f0b0b"; span.style.color = "#fecaca";
-        } else if (r.outcome === "denied") {
-          span.style.borderColor = "#92400e"; span.style.background = "#1a1206"; span.style.color = "#fde68a";
-        } else {
-          span.style.borderColor = "#065f46"; span.style.background = "#052e2a"; span.style.color = "#a7f3d0";
-        }
-        span.textContent = r.outcome;
-        td.appendChild(span);
-      } else {
-        td.textContent = v;
+    tr.className = "audit-row";
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+
+    const ts = fmtTs(r.ts);
+    const actor = r.actor_username || (r.actor_id ? `user #${r.actor_id}` : "—");
+    const target = r.target_type
+      ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}`
+      : "—";
+    const ip = r.actor_ip || "—";
+
+    // Timestamp
+    const tdTs = document.createElement("td");
+    tdTs.className = "audit-cell audit-cell--mono";
+    tdTs.textContent = ts;
+    tr.appendChild(tdTs);
+
+    // Actor
+    const tdActor = document.createElement("td");
+    tdActor.className = "audit-cell";
+    if (r.actor_username) {
+      const strong = document.createElement("strong");
+      strong.className = "audit-actor";
+      strong.textContent = r.actor_username;
+      tdActor.appendChild(strong);
+    } else if (r.actor_id) {
+      const muted = document.createElement("span");
+      muted.className = "audit-actor audit-actor--muted";
+      muted.textContent = `user #${r.actor_id}`;
+      tdActor.appendChild(muted);
+    } else {
+      tdActor.textContent = "—";
+    }
+    tr.appendChild(tdActor);
+
+    // Action
+    const tdAction = document.createElement("td");
+    tdAction.className = "audit-cell";
+    const actionCode = document.createElement("code");
+    actionCode.className = "audit-action";
+    actionCode.textContent = r.action || "—";
+    tdAction.appendChild(actionCode);
+    tr.appendChild(tdAction);
+
+    // Target
+    const tdTarget = document.createElement("td");
+    tdTarget.className = "audit-cell audit-cell--mono";
+    tdTarget.textContent = target;
+    tr.appendChild(tdTarget);
+
+    // Outcome — colored pill via CSS classes
+    const tdOutcome = document.createElement("td");
+    tdOutcome.className = "audit-cell";
+    const outcome = String(r.outcome || "success").toLowerCase();
+    const pill = document.createElement("span");
+    pill.className = `audit-outcome audit-outcome--${outcome}`;
+    pill.textContent = outcome;
+    tdOutcome.appendChild(pill);
+    tr.appendChild(tdOutcome);
+
+    // Client IP
+    const tdIp = document.createElement("td");
+    tdIp.className = "audit-cell audit-cell--mono";
+    tdIp.textContent = ip;
+    tr.appendChild(tdIp);
+
+    const open = () => openDetail(r);
+    tr.addEventListener("click", open);
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
       }
-      tr.appendChild(td);
     });
-    tr.addEventListener("click", () => openDetail(r));
+
     tbody.appendChild(tr);
   });
 }
@@ -91,13 +136,14 @@ function renderPager(meta) {
   const next = meta && meta.next_cursor;
 
   const info = document.createElement("span");
+  info.className = "audit-pager-info";
   info.textContent = `Page ${cursorIndex + 1}`;
-  info.style.marginRight = "12px";
+  host.appendChild(info);
 
   const back = document.createElement("button");
-  back.type = "button"; back.className = "secondary";
-  back.textContent = "Previous"; back.style.width = "auto";
-  back.style.marginRight = "8px";
+  back.type = "button";
+  back.className = "secondary audit-pager-btn";
+  back.textContent = "Previous";
   back.disabled = cursorIndex === 0;
   back.addEventListener("click", () => {
     if (cursorIndex === 0) return;
@@ -106,9 +152,9 @@ function renderPager(meta) {
   });
 
   const first = document.createElement("button");
-  first.type = "button"; first.className = "secondary";
-  first.textContent = "First page"; first.style.width = "auto";
-  first.style.marginRight = "8px";
+  first.type = "button";
+  first.className = "secondary audit-pager-btn";
+  first.textContent = "First page";
   first.disabled = cursorIndex === 0;
   first.addEventListener("click", () => {
     cursorStack = [null];
@@ -117,18 +163,17 @@ function renderPager(meta) {
   });
 
   const nxt = document.createElement("button");
-  nxt.type = "button"; nxt.className = "secondary";
-  nxt.textContent = "Next"; nxt.style.width = "auto";
+  nxt.type = "button";
+  nxt.className = "secondary audit-pager-btn";
+  nxt.textContent = "Next";
   nxt.disabled = !next;
   nxt.addEventListener("click", () => {
-    // Trim any forward cursors so a fresh "next" doesn't leave stale entries.
     cursorStack = cursorStack.slice(0, cursorIndex + 1);
     cursorStack.push(next);
     cursorIndex += 1;
     loadEntries();
   });
 
-  host.appendChild(info);
   host.appendChild(back);
   host.appendChild(first);
   host.appendChild(nxt);
@@ -168,8 +213,15 @@ async function loadEntries() {
       params.before_id = cursor.before_id;
     }
     const res = await apiGet("/audit/api/entries", params);
-    renderTable(res.data || []);
+    const rows = res.data || [];
+    renderTable(rows);
     renderPager(res.meta || {});
+    showAlert(
+      rows.length
+        ? `Showing ${rows.length} entr${rows.length === 1 ? "y" : "ies"}.`
+        : "",
+      "info",
+    );
   } catch (e) {
     showAlert(e.message || "Failed to load entries.", "error");
   }

@@ -38,76 +38,76 @@
     </nav>
 </header>
 
-<main class="dash-main container">
+<main class="dash-main container audit-main">
+
     <div id="auditAlert" class="" aria-live="polite"></div>
 
-    <section class="dash-kpi-section">
-        <div class="dash-kpi-grid">
-            <article class="dash-kpi dash-kpi--neutral">
-                <div class="dash-kpi-body">
-                    <span class="dash-kpi-label">Entries (7d)</span>
-                    <span class="dash-kpi-value" id="auditTotal">—</span>
-                </div>
-            </article>
-            <article class="dash-kpi dash-kpi--danger">
-                <div class="dash-kpi-body">
-                    <span class="dash-kpi-label">Failures (7d)</span>
-                    <span class="dash-kpi-value" id="auditFailures">—</span>
-                </div>
-            </article>
-            <article class="dash-kpi dash-kpi--accent">
-                <div class="dash-kpi-body">
-                    <span class="dash-kpi-label">Distinct actors (7d)</span>
-                    <span class="dash-kpi-value" id="auditActors">—</span>
-                </div>
-            </article>
-        </div>
+    <!-- KPI strip -->
+    <section class="audit-kpi-strip" aria-label="Summary">
+        <article class="audit-kpi audit-kpi--neutral">
+            <span class="audit-kpi-label">Entries · last 7 days</span>
+            <span class="audit-kpi-value" id="auditTotal">—</span>
+            <span class="audit-kpi-sub">all privileged actions</span>
+        </article>
+        <article class="audit-kpi audit-kpi--danger">
+            <span class="audit-kpi-label">Failures · last 7 days</span>
+            <span class="audit-kpi-value" id="auditFailures">—</span>
+            <span class="audit-kpi-sub">logins and OTP failures</span>
+        </article>
+        <article class="audit-kpi audit-kpi--accent">
+            <span class="audit-kpi-label">Distinct actors</span>
+            <span class="audit-kpi-value" id="auditActors">—</span>
+            <span class="audit-kpi-sub">unique usernames in the window</span>
+        </article>
     </section>
 
-    <section class="card dash-logs-panel">
-        <div class="dash-section-head">
-            <h2>Privileged actions</h2>
-            <p class="dash-section-desc">Logins, MFA changes, user administration, SSL management, and configuration.</p>
-        </div>
-
-        <div class="field-group dash-filter-grid">
-            <div class="field">
+    <!-- Filters -->
+    <section class="card audit-filters-card" aria-label="Filters">
+        <div class="audit-filters-row">
+            <div class="audit-field audit-field--grow">
                 <label for="auditFilterAction">Action</label>
-                <select id="auditFilterAction"><option value="">Any</option></select>
+                <select id="auditFilterAction"><option value="">Any action</option></select>
             </div>
-            <div class="field">
+            <div class="audit-field audit-field--grow">
                 <label for="auditFilterActor">Actor username</label>
-                <input id="auditFilterActor" type="text" placeholder="e.g., admin" maxlength="64">
+                <input id="auditFilterActor" type="search" placeholder="e.g., admin" maxlength="64" autocomplete="off">
             </div>
-            <div class="field">
+            <div class="audit-field">
                 <label for="auditFilterOutcome">Outcome</label>
                 <select id="auditFilterOutcome">
-                    <option value="">Any</option>
+                    <option value="">Any outcome</option>
                     <option value="success">Success</option>
                     <option value="failure">Failure</option>
                     <option value="denied">Denied</option>
                 </select>
             </div>
-            <div class="field field--narrow">
-                <label>&nbsp;</label>
-                <button class="primary dash-btn" id="auditApplyBtn" type="button">Apply</button>
-            </div>
-            <div class="field field--narrow">
-                <label>&nbsp;</label>
+            <div class="audit-filters-actions">
+                <button class="primary dash-btn" id="auditApplyBtn" type="button">Apply filters</button>
                 <button class="secondary dash-btn" id="auditResetBtn" type="button">Reset</button>
             </div>
         </div>
+    </section>
+
+    <!-- Table -->
+    <section class="card audit-table-card" aria-labelledby="audit-table-heading">
+        <div class="dash-section-head">
+            <h2 id="audit-table-heading">Privileged actions</h2>
+            <p class="dash-section-desc">
+                Immutable record of logins, MFA changes, user administration, SSL management, and
+                configuration changes. Click any row for the full JSON context.
+            </p>
+        </div>
 
         <div class="dash-table-wrap">
-            <table class="dash-table">
+            <table class="dash-table audit-table">
                 <thead>
                     <tr>
-                        <th>Timestamp (UTC)</th>
-                        <th>Actor</th>
+                        <th style="width: 190px;">Timestamp (UTC)</th>
+                        <th style="width: 160px;">Actor</th>
                         <th>Action</th>
                         <th>Target</th>
-                        <th>Outcome</th>
-                        <th>Client IP</th>
+                        <th style="width: 120px;">Outcome</th>
+                        <th style="width: 150px;">Client IP</th>
                     </tr>
                 </thead>
                 <tbody id="auditTbody">
@@ -120,6 +120,7 @@
             <div id="auditPager" class="pager"></div>
         </div>
     </section>
+
 </main>
 
 <div id="auditDetailModal" class="modal dash-modal" role="dialog" aria-modal="true" aria-label="Audit entry detail">

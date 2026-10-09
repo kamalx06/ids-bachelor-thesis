@@ -31,6 +31,37 @@ function fmtDate(epochSec) {
   return d.toISOString().slice(0, 16).replace("T", " ");
 }
 
+function setKpi(id, value) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = value == null ? "—" : String(value);
+}
+
+function renderKpis({ weekly, ips, hosts, patterns, mitre }) {
+  // Aggregate the weekly summary for the top-line counters.
+  const weeks = weekly?.weeks || [];
+  const dangerous = Array.isArray(weekly?.dangerous) ? weekly.dangerous : [];
+  const suspicious = Array.isArray(weekly?.suspicious) ? weekly.suspicious : [];
+  const totalDangerous = dangerous.reduce((a, b) => a + (Number(b) || 0), 0);
+  const totalSuspicious = suspicious.reduce((a, b) => a + (Number(b) || 0), 0);
+
+  setKpi("kpiEvents", totalDangerous + totalSuspicious);
+  setKpi("kpiDangerous", totalDangerous);
+
+  const actorCount = (ips?.length || 0) + (hosts?.length || 0);
+  setKpi("kpiActors", actorCount);
+
+  const patternCount =
+    (patterns?.ip_patterns?.length || 0) + (patterns?.host_patterns?.length || 0);
+  setKpi("kpiPatterns", patternCount);
+
+  if (mitre && typeof mitre.triggered_techniques === "number") {
+    setKpi("kpiMitre", `${mitre.triggered_techniques}/${mitre.total_techniques}`);
+  } else {
+    setKpi("kpiMitre", "—");
+  }
+}
+
 function renderMitreCoverage(payload) {
   const host = el("mitreCoverage");
   if (!host) return;
@@ -38,14 +69,31 @@ function renderMitreCoverage(payload) {
 
   const byTactic = payload.by_tactic || {};
   const tactics = payload.tactics || [];
+  const total = payload.total_techniques || 0;
+  const triggered = payload.triggered_techniques || 0;
+  const ratio = total > 0 ? triggered / total : 0;
 
-  const summary = document.createElement("p");
-  summary.className = "small";
-  summary.style.marginBottom = "12px";
-  summary.textContent =
-    `${payload.triggered_techniques} of ${payload.total_techniques} mapped techniques triggered in the last ${payload.days} day${payload.days === 1 ? "" : "s"}.`;
-  host.appendChild(summary);
+  // Headline summary with a progress bar.
+  const head = document.createElement("div");
+  head.className = "mitre-summary";
 
+  const summaryText = document.createElement("p");
+  summaryText.className = "mitre-summary-text";
+  summaryText.innerHTML =
+    `<strong>${triggered}</strong> of <strong>${total}</strong> mapped techniques triggered in the last ` +
+    `${payload.days} day${payload.days === 1 ? "" : "s"}.`;
+  head.appendChild(summaryText);
+
+  const bar = document.createElement("div");
+  bar.className = "mitre-progress";
+  const fill = document.createElement("div");
+  fill.className = "mitre-progress-fill";
+  fill.style.width = `${Math.round(ratio * 100)}%`;
+  bar.appendChild(fill);
+  head.appendChild(bar);
+  host.appendChild(head);
+
+  // Tactic rows.
   for (const tactic of tactics) {
     const entries = byTactic[tactic] || [];
     if (!entries.length) continue;
@@ -53,9 +101,13 @@ function renderMitreCoverage(payload) {
     const row = document.createElement("div");
     row.className = "mitre-tactic-row";
 
+    const hitCount = entries.filter((e) => e.count > 0).length;
+
     const label = document.createElement("div");
     label.className = "mitre-tactic-label";
-    label.textContent = tactic;
+    label.innerHTML =
+      `<span class="mitre-tactic-name">${tactic}</span>` +
+      `<span class="mitre-tactic-count">${hitCount}/${entries.length}</span>`;
     row.appendChild(label);
 
     const chips = document.createElement("div");
@@ -64,11 +116,12 @@ function renderMitreCoverage(payload) {
     for (const e of entries) {
       const chip = document.createElement("span");
       chip.className = "mitre-chip";
-      if (e.count > 0) {
-        chip.classList.add("mitre-chip--triggered");
-      }
+      if (e.count > 0) chip.classList.add("mitre-chip--triggered");
       chip.title = `${e.technique} — ${e.name}${e.count ? ` (${e.count} events)` : ""}`;
-      chip.textContent = `${e.technique} · ${e.name}${e.count ? ` (${e.count})` : ""}`;
+      chip.innerHTML =
+        `<span class="mitre-chip-id">${e.technique}</span>` +
+        `<span class="mitre-chip-name">${e.name}</span>` +
+        (e.count ? `<span class="mitre-chip-count">${e.count}</span>` : "");
       chips.appendChild(chip);
     }
 
@@ -321,6 +374,14 @@ async function loadAll() {
   if (threats.status === "fulfilled") renderTopThreats(threats.value);
   if (patterns.status === "fulfilled") renderPatterns(patterns.value);
   if (mitre.status === "fulfilled") renderMitreCoverage(mitre.value);
+
+  renderKpis({
+    weekly: summary.status === "fulfilled" ? summary.value : null,
+    ips: ips.status === "fulfilled" ? ips.value : [],
+    hosts: hosts.status === "fulfilled" ? hosts.value : [],
+    patterns: patterns.status === "fulfilled" ? patterns.value : null,
+    mitre: mitre.status === "fulfilled" ? mitre.value : null,
+  });
 
   const failed = results.filter((r) => r.status === "rejected");
   if (failed.length) {

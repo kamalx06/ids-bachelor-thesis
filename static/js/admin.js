@@ -37,35 +37,75 @@ async function api(path, { method = "GET", body } = {}) {
   return { success: true, data, meta: {} };
 }
 
+function _initialsDataUri(username) {
+  // First char of username injected into an SVG data URI. Safe today
+  // because USERNAME_RE in uni-srver.py limits usernames to [a-zA-Z0-9_-].
+  // If that rule is ever loosened, XML-escape this value.
+  const ch = (username || "?").slice(0, 1).toUpperCase();
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">` +
+    `<rect width="32" height="32" rx="16" fill="#1e293b"/>` +
+    `<text x="16" y="21" text-anchor="middle" font-family="DM Sans, Arial, sans-serif" ` +
+    `font-size="14" font-weight="600" fill="#94a3b8">${ch}</text>` +
+    `</svg>`;
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
+function setKpi(id, value) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = value == null ? "—" : String(value);
+}
+
+function renderKpis(users, meta) {
+  // Total comes from the API's pagination meta; per-role and MFA counts
+  // are computed from the currently-loaded page.
+  const total = Number(meta?.total);
+  setKpi("kpiTotalUsers", Number.isFinite(total) ? total : (users?.length ?? "—"));
+
+  if (!Array.isArray(users)) {
+    ["kpiAdmins", "kpiSoc", "kpiMfa", "kpiLocked"].forEach((id) => setKpi(id, "—"));
+    return;
+  }
+
+  const admins = users.filter((u) => (u.role || "").toLowerCase() === "admin").length;
+  const soc = users.filter((u) => (u.role || "").toLowerCase() === "soc").length;
+  const mfa = users.filter((u) => u.totp_enabled || u.email_otp_enabled).length;
+  const locked = users.filter((u) => u.locked_until).length;
+
+  setKpi("kpiAdmins", admins);
+  setKpi("kpiSoc", soc);
+  setKpi("kpiMfa", mfa);
+  setKpi("kpiLocked", locked);
+}
+
 function avatarCell(u) {
   const wrap = document.createElement("div");
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.gap = "10px";
+  wrap.className = "admin-user-cell";
 
   const img = document.createElement("img");
-  img.alt = "Profile picture";
-  img.width = 28;
-  img.height = 28;
-  img.style.borderRadius = "999px";
-  img.style.objectFit = "cover";
-  img.style.border = "1px solid rgba(255,255,255,.12)";
+  // Empty alt + explicit class so a broken image never renders the
+  // alt text as a two-line placeholder in the table.
+  img.alt = "";
+  img.className = "admin-user-avatar";
+  img.loading = "lazy";
+
+  // If the stored avatar file is missing (user removed it, path stale),
+  // the browser fires onerror. Fall back to the initials SVG so the row
+  // always renders cleanly.
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = _initialsDataUri(u.username);
+  };
 
   if (u.avatar_url) {
-    const bust = `${u.avatar_url}?v=${encodeURIComponent(String(u.id))}`;
-    img.src = bust;
+    img.src = `${u.avatar_url}?v=${encodeURIComponent(String(u.id))}`;
   } else {
-    // First char of username injected into an SVG data URI. Safe today
-    // because USERNAME_RE in uni-srver.py limits usernames to [a-zA-Z0-9_-].
-    // If that rule is ever loosened, XML-escape this value.
-    img.src =
-      "data:image/svg+xml;charset=utf-8," +
-      encodeURIComponent(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" rx="14" fill="#111827"/><text x="14" y="18" text-anchor="middle" font-family="Arial" font-size="14" fill="#9ca3af">${(u.username || "?").slice(0,1).toUpperCase()}</text></svg>`
-      );
+    img.src = _initialsDataUri(u.username);
   }
 
   const name = document.createElement("span");
+  name.className = "admin-user-name";
   name.textContent = u.username;
 
   wrap.appendChild(img);
@@ -77,6 +117,8 @@ function renderUsers(users, meta) {
   const tbody = el("usersTbody");
   if (!tbody) return;
   tbody.innerHTML = "";
+
+  renderKpis(users, meta);
 
   if (!users || users.length === 0) {
     const tr = document.createElement("tr");
@@ -101,6 +143,7 @@ function renderUsers(users, meta) {
 
     const tdRole = document.createElement("td");
     const roleSel = document.createElement("select");
+    roleSel.className = "admin-role-select";
     roleSel.innerHTML = `
       <option value="soc">SOC Analyst</option>
       <option value="admin">IT Administrator</option>
@@ -137,13 +180,13 @@ function renderUsers(users, meta) {
         : "-";
 
     const tdActions = document.createElement("td");
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "admin-actions";
 
     const lockBtn = document.createElement("button");
     lockBtn.type = "button";
     lockBtn.className = "secondary";
     lockBtn.textContent = u.locked_until ? "Unlock" : "Lock";
-    lockBtn.style.width = "auto";
-    lockBtn.style.marginRight = "8px";
     lockBtn.addEventListener("click", async () => {
       const action = u.locked_until ? "unlock" : "lock";
       const confirmText = `Type "${u.username}" to ${action} this account:`;
@@ -165,8 +208,6 @@ function renderUsers(users, meta) {
     resetMfaBtn.type = "button";
     resetMfaBtn.className = "secondary";
     resetMfaBtn.textContent = "Reset MFA";
-    resetMfaBtn.style.width = "auto";
-    resetMfaBtn.style.marginRight = "8px";
     resetMfaBtn.addEventListener("click", async () => {
       const typed = prompt(`Type "${u.username}" to confirm MFA reset:`) || "";
       if (typed !== u.username) return;
@@ -183,8 +224,6 @@ function renderUsers(users, meta) {
     resetPwBtn.type = "button";
     resetPwBtn.className = "secondary";
     resetPwBtn.textContent = "Reset PW";
-    resetPwBtn.style.width = "auto";
-    resetPwBtn.style.marginRight = "8px";
     resetPwBtn.addEventListener("click", async () => {
       const pw = prompt("Enter a new temporary password (12-64 chars):");
       if (!pw) return;
@@ -200,7 +239,6 @@ function renderUsers(users, meta) {
     delBtn.type = "button";
     delBtn.className = "danger";
     delBtn.textContent = "Delete";
-    delBtn.style.width = "auto";
     delBtn.addEventListener("click", async () => {
       const typed = prompt(`Type "${u.username}" to permanently delete:`) || "";
       if (typed !== u.username) return;
@@ -213,10 +251,11 @@ function renderUsers(users, meta) {
       }
     });
 
-    tdActions.appendChild(lockBtn);
-    tdActions.appendChild(resetMfaBtn);
-    tdActions.appendChild(resetPwBtn);
-    tdActions.appendChild(delBtn);
+    actionsWrap.appendChild(lockBtn);
+    actionsWrap.appendChild(resetMfaBtn);
+    actionsWrap.appendChild(resetPwBtn);
+    actionsWrap.appendChild(delBtn);
+    tdActions.appendChild(actionsWrap);
 
     tr.appendChild(tdId);
     tr.appendChild(tdUser);
@@ -256,11 +295,9 @@ function renderPager(meta = {}) {
 
   const prev = document.createElement("button");
   prev.type = "button";
-  prev.className = "secondary";
+  prev.className = "secondary admin-pager-btn";
   prev.textContent = "Prev";
   prev.disabled = page <= 1;
-  prev.style.width = "auto";
-  prev.style.marginRight = "8px";
   prev.addEventListener("click", async () => {
     currentPage = Math.max(1, page - 1);
     await refreshUsers();
@@ -268,10 +305,9 @@ function renderPager(meta = {}) {
 
   const next = document.createElement("button");
   next.type = "button";
-  next.className = "secondary";
+  next.className = "secondary admin-pager-btn";
   next.textContent = "Next";
   next.disabled = page >= pages;
-  next.style.width = "auto";
   next.addEventListener("click", async () => {
     currentPage = Math.min(pages, page + 1);
     await refreshUsers();

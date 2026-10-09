@@ -156,141 +156,155 @@
 
         <details class="dash-filters" open>
             <summary>
-                Advanced filters
+                <span class="dash-filters-caret" aria-hidden="true">▾</span>
+                <span>Advanced filters</span>
                 <span id="activeFilterCount" class="dash-filter-badge is-hidden" aria-live="polite">0 active</span>
             </summary>
 
-            <div class="dash-filter-section">
-                <h3 class="dash-filter-section-title">Network identity</h3>
-                <div class="field-group dash-filter-grid">
-                    <div class="field">
-                        <label for="qIp">IP (src or dst)</label>
-                        <input id="qIp" type="text" placeholder="e.g., 10.0.0.5" autocomplete="off">
-                    </div>
-                    <div class="field">
-                        <label for="qSrcIp">Source IP</label>
-                        <input id="qSrcIp" type="text" placeholder="e.g., 192.168.1.10" autocomplete="off">
-                    </div>
-                    <div class="field">
-                        <label for="qDstIp">Destination IP</label>
-                        <input id="qDstIp" type="text" placeholder="e.g., 8.8.8.8" autocomplete="off">
-                    </div>
-                </div>
-            </div>
+            <div class="dash-filters-body">
 
-            <div class="dash-filter-section">
-                <h3 class="dash-filter-section-title">Ports &amp; protocol</h3>
-                <div class="field-group dash-filter-grid">
-                    <div class="field field--narrow">
-                        <label for="qPort">Port (either)</label>
-                        <input id="qPort" type="number" min="0" max="65535" step="1" placeholder="443">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qSrcPort">Source port</label>
-                        <input id="qSrcPort" type="number" min="0" max="65535" step="1" placeholder="52431">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qDstPort">Dest port</label>
-                        <input id="qDstPort" type="number" min="0" max="65535" step="1" placeholder="80">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qProtocol">Protocol</label>
-                        <select id="qProtocol">
-                            <option value="">Any</option>
-                            <option value="TCP">TCP</option>
-                            <option value="UDP">UDP</option>
-                            <option value="ICMP">ICMP</option>
-                        </select>
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">Network identity</h3>
+                    <div class="dash-filter-row cols-3">
+                        <div class="dash-field">
+                            <label for="qIp">IP (source or destination)</label>
+                            <input id="qIp" type="text" placeholder="10.0.0.5" autocomplete="off">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qSrcIp">Source IP</label>
+                            <input id="qSrcIp" type="text" placeholder="192.168.1.10" autocomplete="off">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qDstIp">Destination IP</label>
+                            <input id="qDstIp" type="text" placeholder="8.8.8.8" autocomplete="off">
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="dash-filter-section">
-                <h3 class="dash-filter-section-title">HTTP / DNS &amp; content</h3>
-                <div class="field-group dash-filter-grid">
-                    <div class="field">
-                        <label for="qUrl">URL / domain contains</label>
-                        <input id="qUrl" type="text" placeholder="e.g., example.com" autocomplete="off">
-                    </div>
-                    <div class="field">
-                        <label for="qReason">Reason contains</label>
-                        <input id="qReason" type="text" placeholder="e.g., dns_tunnel, sql_injection" autocomplete="off">
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">Ports &amp; protocol</h3>
+                    <div class="dash-filter-row cols-4-narrow">
+                        <div class="dash-field">
+                            <label for="qPort">Port (either)</label>
+                            <input id="qPort" type="number" min="0" max="65535" step="1" placeholder="443">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qSrcPort">Source port</label>
+                            <input id="qSrcPort" type="number" min="0" max="65535" step="1" placeholder="52431">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qDstPort">Destination port</label>
+                            <input id="qDstPort" type="number" min="0" max="65535" step="1" placeholder="80">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qProtocol">Protocol</label>
+                            <select id="qProtocol">
+                                <option value="">Any</option>
+                                <option value="TCP">TCP</option>
+                                <option value="UDP">UDP</option>
+                                <option value="ICMP">ICMP</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="dash-filter-section">
-                <h3 class="dash-filter-section-title">Classification &amp; scores</h3>
-                <div class="field-group dash-filter-grid">
-                    <div class="field">
-                        <label for="qClassification">Classification</label>
-                        <select id="qClassification">
-                            <option value="">Any</option>
-                            <option value="safe">Safe</option>
-                            <option value="suspicious">Suspicious</option>
-                            <option value="dangerous">Dangerous</option>
-                        </select>
-                    </div>
-                    <div class="field">
-                        <label for="qAiLabel">AI label</label>
-                        <select id="qAiLabel">
-                            <option value="">Any</option>
-                            <option value="safe">Safe</option>
-                            <option value="suspicious">Suspicious</option>
-                            <option value="dangerous">Dangerous</option>
-                        </select>
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qMinScore">Min AI score</label>
-                        <input id="qMinScore" type="number" min="0" max="1" step="0.01" placeholder="0.00">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qMaxScore">Max AI score</label>
-                        <input id="qMaxScore" type="number" min="0" max="1" step="0.01" placeholder="1.00">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qMinAnomaly">Min anomaly</label>
-                        <input id="qMinAnomaly" type="number" min="0" max="1" step="0.01" placeholder="0.00">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qMinConfidence">Min confidence</label>
-                        <input id="qMinConfidence" type="number" min="0" max="1" step="0.01" placeholder="0.00">
-                    </div>
-                    <div class="field">
-                        <label for="qThreatIntel">Threat intel</label>
-                        <select id="qThreatIntel">
-                            <option value="">Any</option>
-                            <option value="1">Has TI match</option>
-                            <option value="0">No TI match</option>
-                        </select>
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">HTTP / DNS content</h3>
+                    <div class="dash-filter-row cols-2">
+                        <div class="dash-field">
+                            <label for="qUrl">URL / domain contains</label>
+                            <input id="qUrl" type="text" placeholder="example.com" autocomplete="off">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qReason">Reason contains</label>
+                            <input id="qReason" type="text" placeholder="dns_tunnel, sql_injection" autocomplete="off">
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="dash-filter-section">
-                <h3 class="dash-filter-section-title">Time window</h3>
-                <div class="dash-time-presets" role="group" aria-label="Time presets">
-                    <button type="button" class="dash-preset-btn" data-range="15m">Last 15m</button>
-                    <button type="button" class="dash-preset-btn" data-range="1h">Last 1h</button>
-                    <button type="button" class="dash-preset-btn" data-range="6h">Last 6h</button>
-                    <button type="button" class="dash-preset-btn" data-range="24h">Last 24h</button>
-                    <button type="button" class="dash-preset-btn" data-range="7d">Last 7d</button>
-                    <button type="button" class="dash-preset-btn" data-range="clear">All time</button>
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">Classification</h3>
+                    <div class="dash-filter-row cols-3">
+                        <div class="dash-field">
+                            <label for="qClassification">Classification</label>
+                            <select id="qClassification">
+                                <option value="">Any</option>
+                                <option value="safe">Safe</option>
+                                <option value="suspicious">Suspicious</option>
+                                <option value="dangerous">Dangerous</option>
+                            </select>
+                        </div>
+                        <div class="dash-field">
+                            <label for="qAiLabel">AI label</label>
+                            <select id="qAiLabel">
+                                <option value="">Any</option>
+                                <option value="safe">Safe</option>
+                                <option value="suspicious">Suspicious</option>
+                                <option value="dangerous">Dangerous</option>
+                            </select>
+                        </div>
+                        <div class="dash-field">
+                            <label for="qThreatIntel">Threat intel</label>
+                            <select id="qThreatIntel">
+                                <option value="">Any</option>
+                                <option value="1">Has TI match</option>
+                                <option value="0">No TI match</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
-                <div class="field-group dash-filter-grid">
-                    <div class="field">
-                        <label for="qStart">Start</label>
-                        <input id="qStart" type="datetime-local" step="1">
-                    </div>
-                    <div class="field">
-                        <label for="qEnd">End</label>
-                        <input id="qEnd" type="datetime-local" step="1">
-                    </div>
-                    <div class="field field--narrow">
-                        <label for="qLimit">Limit</label>
-                        <input id="qLimit" type="number" min="1" max="2000" step="1" value="200">
+
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">Score thresholds</h3>
+                    <div class="dash-filter-row cols-4-narrow">
+                        <div class="dash-field">
+                            <label for="qMinScore">Min AI score</label>
+                            <input id="qMinScore" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qMaxScore">Max AI score</label>
+                            <input id="qMaxScore" type="number" min="0" max="1" step="0.01" placeholder="1.00">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qMinAnomaly">Min anomaly</label>
+                            <input id="qMinAnomaly" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qMinConfidence">Min confidence</label>
+                            <input id="qMinConfidence" type="number" min="0" max="1" step="0.01" placeholder="0.00">
+                        </div>
                     </div>
                 </div>
+
+                <div class="dash-filter-section">
+                    <h3 class="dash-filter-section-title">Time window</h3>
+                    <div class="dash-presets-row">
+                        <span class="dash-presets-label">Quick ranges</span>
+                        <div class="dash-time-presets" role="group" aria-label="Time presets">
+                            <button type="button" class="dash-preset-btn" data-range="15m">15m</button>
+                            <button type="button" class="dash-preset-btn" data-range="1h">1h</button>
+                            <button type="button" class="dash-preset-btn" data-range="6h">6h</button>
+                            <button type="button" class="dash-preset-btn" data-range="24h">24h</button>
+                            <button type="button" class="dash-preset-btn" data-range="7d">7d</button>
+                            <button type="button" class="dash-preset-btn" data-range="clear">All time</button>
+                        </div>
+                    </div>
+                    <div class="dash-filter-row cols-3-narrow">
+                        <div class="dash-field">
+                            <label for="qStart">Start</label>
+                            <input id="qStart" type="datetime-local" step="1">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qEnd">End</label>
+                            <input id="qEnd" type="datetime-local" step="1">
+                        </div>
+                        <div class="dash-field">
+                            <label for="qLimit">Limit</label>
+                            <input id="qLimit" type="number" min="1" max="2000" step="1" value="200">
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </details>
 

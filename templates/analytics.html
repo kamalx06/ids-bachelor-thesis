@@ -40,86 +40,139 @@
     </nav>
 </header>
 
-<main class="dash-main container">
+<main class="dash-main container analytics-main">
+
     <div id="analyticsAlert" class="" aria-live="polite"></div>
 
-    <section class="dash-charts-section" aria-label="Summary">
-        <div class="dash-section-head">
-            <h2>Weekly overview</h2>
-            <p class="dash-section-desc">Aggregated from all suspicious and dangerous events.</p>
-        </div>
-        <article class="card dash-chart-card dash-chart-card--wide">
-            <h3 class="dash-chart-title">Weekly totals</h3>
-            <p class="dash-chart-sub">Dangerous vs. suspicious events per week</p>
-            <div class="dash-chart-wrap"><canvas id="weeklySummaryChart" height="100"></canvas></div>
+    <!-- KPI strip -->
+    <section class="analytics-kpi-strip" aria-label="Key metrics">
+        <article class="analytics-kpi analytics-kpi--neutral">
+            <span class="analytics-kpi-label">Events (12w)</span>
+            <span class="analytics-kpi-value" id="kpiEvents">—</span>
+            <span class="analytics-kpi-sub">weekly totals</span>
+        </article>
+        <article class="analytics-kpi analytics-kpi--danger">
+            <span class="analytics-kpi-label">Dangerous</span>
+            <span class="analytics-kpi-value" id="kpiDangerous">—</span>
+            <span class="analytics-kpi-sub">in the same period</span>
+        </article>
+        <article class="analytics-kpi analytics-kpi--accent">
+            <span class="analytics-kpi-label">Recurring actors</span>
+            <span class="analytics-kpi-value" id="kpiActors">—</span>
+            <span class="analytics-kpi-sub">IPs and hosts</span>
+        </article>
+        <article class="analytics-kpi analytics-kpi--warn">
+            <span class="analytics-kpi-label">Active patterns</span>
+            <span class="analytics-kpi-value" id="kpiPatterns">—</span>
+            <span class="analytics-kpi-sub">periodic behaviour</span>
+        </article>
+        <article class="analytics-kpi analytics-kpi--safe">
+            <span class="analytics-kpi-label">ATT&amp;CK techniques</span>
+            <span class="analytics-kpi-value" id="kpiMitre">—</span>
+            <span class="analytics-kpi-sub">triggered in 30d</span>
         </article>
     </section>
 
-    <section class="dash-charts-section" aria-label="MITRE ATT&CK coverage">
+    <!-- Trend charts (side by side) -->
+    <section class="analytics-section">
+        <div class="dash-section-head">
+            <h2>Trends</h2>
+            <p class="dash-section-desc">Weekly activity and dominant threat categories from all suspicious and dangerous events.</p>
+        </div>
+        <div class="analytics-grid analytics-grid--2">
+            <article class="card analytics-card">
+                <header class="analytics-card-head">
+                    <h3 class="analytics-card-title">Weekly totals</h3>
+                    <p class="analytics-card-sub">Dangerous vs. suspicious events per week</p>
+                </header>
+                <div class="analytics-chart-wrap"><canvas id="weeklySummaryChart" height="110"></canvas></div>
+            </article>
+            <article class="card analytics-card">
+                <header class="analytics-card-head">
+                    <h3 class="analytics-card-title">Top threat categories</h3>
+                    <p class="analytics-card-sub">Ranked by total events in the last 30 days</p>
+                </header>
+                <div class="analytics-chart-wrap"><canvas id="topThreatsChart" height="110"></canvas></div>
+            </article>
+        </div>
+    </section>
+
+    <!-- MITRE coverage -->
+    <section class="analytics-section" aria-label="MITRE ATT&CK coverage">
         <div class="dash-section-head">
             <h2>MITRE ATT&amp;CK coverage</h2>
-            <p class="dash-section-desc">Techniques detected from your alerts, grouped by tactic. Grey = mapped but not yet seen.</p>
+            <p class="dash-section-desc">Techniques detected from your alerts, grouped by tactic. Grey chips are mapped but not yet observed.</p>
         </div>
-        <article class="card dash-chart-card dash-chart-card--wide">
+        <article class="card analytics-card analytics-card--full">
             <div id="mitreCoverage" class="mitre-coverage">
                 <p class="empty">Loading coverage…</p>
             </div>
         </article>
     </section>
 
-    <section class="dash-charts-section" aria-label="Detected patterns">
+    <!-- Recurring patterns -->
+    <section class="analytics-section" aria-label="Detected patterns">
         <div class="dash-section-head">
             <h2>Recurring patterns</h2>
-            <p class="dash-section-desc">Attackers that come back on a predictable schedule.</p>
+            <p class="dash-section-desc">Attackers that come back on a predictable schedule — detected from historical day-of-week clustering.</p>
         </div>
         <div id="patternsGrid" class="analytics-patterns-grid">
             <p class="empty">Loading patterns…</p>
         </div>
     </section>
 
-    <section class="dash-charts-section" aria-label="Heatmap">
+    <!-- Heatmap -->
+    <section class="analytics-section" aria-label="Heatmap">
         <div class="dash-section-head">
             <h2>Weekly activity heatmap</h2>
             <p class="dash-section-desc">Dangerous events by day of week and hour of day.</p>
         </div>
-        <article class="card dash-chart-card dash-chart-card--wide">
-            <div class="analytics-heatmap-controls">
-                <label for="heatmapWeeks">Weeks:</label>
-                <select id="heatmapWeeks">
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="4" selected>4</option>
-                    <option value="8">8</option>
-                    <option value="12">12</option>
-                </select>
+        <article class="card analytics-card analytics-card--full">
+            <div class="analytics-heatmap-head">
+                <div class="analytics-heatmap-legend">
+                    <span class="analytics-legend-dot" style="background: rgba(16, 185, 129, 0.55);"></span>
+                    <span>Low</span>
+                    <span class="analytics-legend-dot" style="background: rgba(245, 158, 11, 0.7);"></span>
+                    <span>Medium</span>
+                    <span class="analytics-legend-dot" style="background: rgba(239, 68, 68, 0.75);"></span>
+                    <span>High</span>
+                </div>
+                <div class="analytics-heatmap-controls">
+                    <label for="heatmapWeeks">Window:</label>
+                    <select id="heatmapWeeks">
+                        <option value="1">1 week</option>
+                        <option value="2">2 weeks</option>
+                        <option value="4" selected>4 weeks</option>
+                        <option value="8">8 weeks</option>
+                        <option value="12">12 weeks</option>
+                    </select>
+                </div>
             </div>
             <div id="heatmapContainer" class="analytics-heatmap"></div>
         </article>
     </section>
 
-    <section class="dash-charts-section" aria-label="Recurring actors">
+    <!-- Recurring actors -->
+    <section class="analytics-section" aria-label="Recurring actors">
         <div class="dash-section-head">
-            <h2>Recurring attackers</h2>
-            <p class="dash-section-desc">Source IPs seen across multiple days.</p>
+            <h2>Recurring actors</h2>
+            <p class="dash-section-desc">Source IPs and hosts that appear on three or more distinct days within the lookback window.</p>
         </div>
-        <div class="dash-charts-grid">
-            <article class="card dash-chart-card">
-                <h3 class="dash-chart-title">Top threat categories</h3>
-                <p class="dash-chart-sub">Ranked by total events</p>
-                <div class="dash-chart-wrap"><canvas id="topThreatsChart" height="120"></canvas></div>
-            </article>
-            <article class="card dash-chart-card">
-                <h3 class="dash-chart-title">Recurring source IPs</h3>
-                <p class="dash-chart-sub">Appeared on 3+ distinct days</p>
+        <div class="analytics-grid analytics-grid--2">
+            <article class="card analytics-card">
+                <header class="analytics-card-head">
+                    <h3 class="analytics-card-title">Recurring source IPs</h3>
+                    <p class="analytics-card-sub">Ranked by days active, then total events</p>
+                </header>
                 <div class="analytics-table-wrap">
-                    <table class="dash-table">
+                    <table class="dash-table analytics-table">
                         <thead>
                             <tr>
                                 <th>IP</th>
-                                <th>Days</th>
-                                <th>Events</th>
-                                <th>Dangerous</th>
-                                <th>Worst</th>
+                                <th class="num">Days</th>
+                                <th class="num">Events</th>
+                                <th class="num">Dangerous</th>
+                                <th class="num">Worst</th>
                             </tr>
                         </thead>
                         <tbody id="recurringIpsTbody">
@@ -128,18 +181,20 @@
                     </table>
                 </div>
             </article>
-            <article class="card dash-chart-card">
-                <h3 class="dash-chart-title">Recurring hosts</h3>
-                <p class="dash-chart-sub">Appeared on 3+ distinct days</p>
+            <article class="card analytics-card">
+                <header class="analytics-card-head">
+                    <h3 class="analytics-card-title">Recurring hosts</h3>
+                    <p class="analytics-card-sub">Ranked by days active, then total events</p>
+                </header>
                 <div class="analytics-table-wrap">
-                    <table class="dash-table">
+                    <table class="dash-table analytics-table">
                         <thead>
                             <tr>
                                 <th>Host</th>
-                                <th>Days</th>
-                                <th>Events</th>
-                                <th>Dangerous</th>
-                                <th>Worst</th>
+                                <th class="num">Days</th>
+                                <th class="num">Events</th>
+                                <th class="num">Dangerous</th>
+                                <th class="num">Worst</th>
                             </tr>
                         </thead>
                         <tbody id="recurringHostsTbody">
@@ -150,6 +205,7 @@
             </article>
         </div>
     </section>
+
 </main>
 
 <script src="/static/js/analytics.js"></script>

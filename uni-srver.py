@@ -253,7 +253,8 @@ def secure_headers(response):
         "base-uri 'self'; "
         "script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com"
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:"
     )
     response.headers["Permissions-Policy"] = (
         "geolocation=(), microphone=(), camera=(), "

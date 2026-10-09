@@ -39,113 +39,241 @@
     </nav>
 </header>
 
-<main class="dash-main container">
-    <section class="dash-settings-panel card">
-        <div class="dash-section-head">
-            <h2>Your account</h2>
-            <p class="dash-section-desc">Manage credentials, profile details, and multi-factor authentication.</p>
-        </div>
+<main class="dash-main container settings-main">
 
-        <div class="settings-header">
-            <div class="avatar-shell">
-                {% if avatar_url %}
-                    <img id="avatarPreview" src="{{ avatar_url }}?v={{ username|urlencode }}" alt="Profile picture">
+    <!-- Profile hero -->
+    <section class="settings-hero">
+        <div class="settings-hero-avatar">
+            {% if avatar_url %}
+                <img id="avatarPreview" src="{{ avatar_url }}?v={{ username|urlencode }}" alt="Profile picture">
+            {% else %}
+                <div id="avatarInitials" class="settings-hero-initials">{{ (username or '')[:1].upper() }}</div>
+            {% endif %}
+        </div>
+        <div class="settings-hero-body">
+            <h2 class="settings-hero-name">{{ username }}</h2>
+            {% if email %}
+                <p class="settings-hero-email">{{ email }}</p>
+            {% else %}
+                <p class="settings-hero-email settings-hero-email--missing">No email configured</p>
+            {% endif %}
+            <div class="settings-hero-badges">
+                <span class="settings-badge settings-badge--role">
+                    {{ "Administrator" if (current_user.role or "")|lower == "admin" else "SOC Analyst" }}
+                </span>
+                {% if totp_enabled %}
+                    <span class="settings-badge settings-badge--ok">TOTP enabled</span>
                 {% else %}
-                    <div id="avatarInitials" class="avatar-initials">{{ (username or '')[:1].upper() }}</div>
+                    <span class="settings-badge settings-badge--muted">TOTP off</span>
                 {% endif %}
-            </div>
-            <div class="settings-user-meta">
-                <div class="settings-user-name">{{ username }}</div>
-                {% if email %}
-                    <div class="settings-user-email">{{ email }}</div>
+                {% if email_otp_enabled %}
+                    <span class="settings-badge settings-badge--ok">Email OTP enabled</span>
+                {% else %}
+                    <span class="settings-badge settings-badge--muted">Email OTP off</span>
                 {% endif %}
-            </div>
-        </div>
-
-        <div class="settings-layout">
-            <div class="settings-column">
-                <section class="settings-card-section">
-                    <div class="settings-meta-pill">Security</div>
-                    <h3 class="settings-section-title">Password Management</h3>
-                    <div id="formAlert" aria-live="polite" class="{% if error %}alert error{% endif %}">
-                        {% if error %}{{ error }}{% endif %}
-                    </div>
-                    <form id="passwordForm" method="POST" action="/change_password" autocomplete="off">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <div class="settings-subgrid">
-                            <div class="full-width">
-                                <input type="password" name="current_password" placeholder="Current password" required maxlength="64">
-                            </div>
-                            <div class="full-width">
-                                <input type="password" name="new_password" placeholder="New password (min 12 chars)" required minlength="12" maxlength="64">
-                            </div>
-                            {% if totp_enabled %}
-                            <div class="full-width">
-                                <input type="text" name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit TOTP code" maxlength="6" pattern="\d{6}" required>
-                            </div>
-                            {% endif %}
-                        </div>
-                        <button type="submit" class="primary dash-btn">Change Password</button>
-                    </form>
-                </section>
-
-                <section class="settings-card-section">
-                    <div class="settings-meta-pill">Profile</div>
-                    <h3 class="settings-section-title">Profile details</h3>
-                    <p class="small settings-section-subtitle">Update your basic account details and profile picture.</p>
-                    <form id="profileForm" method="POST" action="/update_profile" enctype="multipart/form-data" autocomplete="off">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <div class="settings-subgrid">
-                            <div>
-                                <input type="text" name="username" placeholder="Username" value="{{ username or '' }}" required>
-                            </div>
-                            <div>
-                                <input type="email" name="email" placeholder="Optional email for email-based OTP" value="{{ email or '' }}">
-                            </div>
-                            <div class="full-width">
-                                <input type="password" name="confirm_password" placeholder="Confirm your password to save changes" required maxlength="64" autocomplete="current-password">
-                            </div>
-                            <div class="avatar-upload-row full-width">
-                                <input id="avatarInput" type="file" name="avatar" accept="image/png,image/jpeg">
-                            </div>
-                        </div>
-                        <p class="small">Changing your username will log you out and you will need to log in again with your new username.</p>
-                        <p class="small">Profile pictures must be image files only. The server will validate file type and size before saving.</p>
-                        <button type="submit" class="primary dash-btn">Save Profile</button>
-                    </form>
-                </section>
-            </div>
-
-            <div class="settings-column">
-                <section class="settings-card-section">
-                    <div class="settings-meta-pill">2FA</div>
-                    <h3 class="settings-section-title">Two-Factor Authentication</h3>
-                    <h4>TOTP (Authenticator app)</h4>
-                    {% if totp_enabled %}
-                        <p class="small">TOTP is currently enabled for your account. Use your authenticator app to generate login codes.</p>
-                        <button type="button" id="openDisableTotpModal" class="danger dash-btn">Disable TOTP</button>
-                    {% else %}
-                        <p class="small">Protect your account with an authenticator app that generates one-time login codes.</p>
-                        <form id="enableTOTPForm" method="POST" action="/enable_totp">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="primary dash-btn">Enable TOTP</button>
-                        </form>
-                    {% endif %}
-                    <p class="small dash-mt">Disabling 2FA reduces account security.</p>
-                    <hr class="settings-divider">
-                    <h4>Email-based OTP</h4>
-                    <p class="small">Use one-time codes sent to your email when logging in. You must first save an email address in the profile section.</p>
-                    {% if email_otp_enabled %}
-                        <p class="small">Email-based OTP is currently enabled{% if masked_email %} for {{ masked_email }}.{% elif email %} for {{ email }}.{% else %} for your account.{% endif %}</p>
-                        <button type="button" id="openDisableEmailOtpModal" class="danger dash-btn">Disable email OTP</button>
-                    {% else %}
-                        <p class="small">Email-based OTP is not enabled yet.</p>
-                        <button type="button" id="startEmailOtpEnable" class="primary dash-btn"{% if not email %} disabled title="Add an email above and save profile first."{% endif %}>Enable email OTP</button>
-                    {% endif %}
-                </section>
             </div>
         </div>
     </section>
+
+    <!-- Alerts from the server-side handler -->
+    <div id="formAlert" aria-live="polite" class="{% if error %}alert error{% endif %}">
+        {% if error %}{{ error }}{% endif %}
+    </div>
+
+    <!-- Profile + password -->
+    <section class="settings-section">
+        <div class="dash-section-head">
+            <h2>Profile &amp; credentials</h2>
+            <p class="dash-section-desc">Update your account details, email address, and password.</p>
+        </div>
+        <div class="settings-grid">
+
+            <article class="card settings-card">
+                <header class="settings-card-head">
+                    <div class="settings-card-icon" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/>
+                            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="settings-card-title">Profile details</h3>
+                        <p class="settings-card-sub">Name, contact email, and profile picture.</p>
+                    </div>
+                </header>
+
+                <form id="profileForm" method="POST" action="/update_profile" enctype="multipart/form-data" autocomplete="off" class="settings-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                    <div class="settings-field">
+                        <label for="profileUsername">Username</label>
+                        <input id="profileUsername" type="text" name="username" value="{{ username or '' }}" required>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="profileEmail">Email (for alerts and email OTP)</label>
+                        <input id="profileEmail" type="email" name="email" placeholder="you@company.com" value="{{ email or '' }}">
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="avatarInput">Profile picture</label>
+                        <input id="avatarInput" type="file" name="avatar" accept="image/png,image/jpeg">
+                        <p class="settings-field-hint">PNG or JPEG, up to 2 MB, max 2000×2000 px. Server validates the file before saving.</p>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="profileConfirm">Confirm password to save</label>
+                        <input id="profileConfirm" type="password" name="confirm_password" required maxlength="64" autocomplete="current-password">
+                    </div>
+
+                    <p class="settings-form-note">
+                        Changing your username will log you out — you will need to sign in again with the new username.
+                    </p>
+
+                    <div class="settings-form-actions">
+                        <button type="submit" class="primary dash-btn">Save profile</button>
+                    </div>
+                </form>
+            </article>
+
+            <article class="card settings-card">
+                <header class="settings-card-head">
+                    <div class="settings-card-icon" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                            <path d="M8 10V7a4 4 0 018 0v3" stroke="currentColor" stroke-width="1.6"/>
+                            <circle cx="12" cy="15.5" r="1.5" fill="currentColor"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="settings-card-title">Password</h3>
+                        <p class="settings-card-sub">Change the password used to sign in.</p>
+                    </div>
+                </header>
+
+                <form id="passwordForm" method="POST" action="/change_password" autocomplete="off" class="settings-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                    <div class="settings-field">
+                        <label for="currentPassword">Current password</label>
+                        <input id="currentPassword" type="password" name="current_password" required maxlength="64" autocomplete="current-password">
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="newPassword">New password</label>
+                        <input id="newPassword" type="password" name="new_password" required minlength="12" maxlength="64" autocomplete="new-password">
+                        <p class="settings-field-hint">Minimum 12 characters.</p>
+                    </div>
+
+                    {% if totp_enabled %}
+                    <div class="settings-field">
+                        <label for="changePasswordOtp">TOTP code</label>
+                        <input id="changePasswordOtp" type="text" name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="6 digits" maxlength="6" pattern="\d{6}" required>
+                        <p class="settings-field-hint">Required because TOTP is enabled on your account.</p>
+                    </div>
+                    {% endif %}
+
+                    <div class="settings-form-actions">
+                        <button type="submit" class="primary dash-btn">Change password</button>
+                    </div>
+                </form>
+            </article>
+
+        </div>
+    </section>
+
+    <!-- Two-factor authentication -->
+    <section class="settings-section">
+        <div class="dash-section-head">
+            <h2>Two-Factor Authentication</h2>
+            <p class="dash-section-desc">Add a second factor to sign in. Either method can be enabled independently.</p>
+        </div>
+        <div class="settings-grid">
+
+            <article class="card settings-card settings-card--2fa">
+                <header class="settings-card-head">
+                    <div class="settings-card-icon settings-card-icon--accent" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <rect x="3" y="4" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                            <path d="M7 20h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                            <path d="M8 11l2.5 2.5L16 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="settings-card-title">TOTP (Authenticator app)</h3>
+                        <p class="settings-card-sub">Codes from Google Authenticator, 1Password, Authy, etc.</p>
+                    </div>
+                    <span class="settings-state {% if totp_enabled %}settings-state--on{% else %}settings-state--off{% endif %}">
+                        {% if totp_enabled %}Enabled{% else %}Not enabled{% endif %}
+                    </span>
+                </header>
+
+                {% if totp_enabled %}
+                    <p class="settings-card-body">
+                        TOTP is active. Use your authenticator app to generate a 6-digit code each time you sign in.
+                    </p>
+                    <div class="settings-form-actions">
+                        <button type="button" id="openDisableTotpModal" class="danger dash-btn">Disable TOTP</button>
+                    </div>
+                {% else %}
+                    <p class="settings-card-body">
+                        Protect your account with an authenticator app. You will scan a QR code once, then use the app to generate login codes.
+                    </p>
+                    <form id="enableTOTPForm" method="POST" action="/enable_totp">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="settings-form-actions">
+                            <button type="submit" class="primary dash-btn">Enable TOTP</button>
+                        </div>
+                    </form>
+                {% endif %}
+            </article>
+
+            <article class="card settings-card settings-card--2fa">
+                <header class="settings-card-head">
+                    <div class="settings-card-icon settings-card-icon--accent" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                            <path d="M3 7l9 6 9-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="settings-card-title">Email-based OTP</h3>
+                        <p class="settings-card-sub">Codes delivered to your email address.</p>
+                    </div>
+                    <span class="settings-state {% if email_otp_enabled %}settings-state--on{% else %}settings-state--off{% endif %}">
+                        {% if email_otp_enabled %}Enabled{% else %}Not enabled{% endif %}
+                    </span>
+                </header>
+
+                {% if email_otp_enabled %}
+                    <p class="settings-card-body">
+                        Email OTP is active{% if masked_email %} for <strong>{{ masked_email }}</strong>{% elif email %} for <strong>{{ email }}</strong>{% endif %}.
+                    </p>
+                    <div class="settings-form-actions">
+                        <button type="button" id="openDisableEmailOtpModal" class="danger dash-btn">Disable email OTP</button>
+                    </div>
+                {% else %}
+                    {% if email %}
+                        <p class="settings-card-body">
+                            Send one-time codes to <strong>{{ email }}</strong> when you sign in. No authenticator app required.
+                        </p>
+                        <div class="settings-form-actions">
+                            <button type="button" id="startEmailOtpEnable" class="primary dash-btn">Enable email OTP</button>
+                        </div>
+                    {% else %}
+                        <p class="settings-card-body">
+                            Add an email address in the <em>Profile details</em> section first, then come back here to enable email OTP.
+                        </p>
+                        <div class="settings-form-actions">
+                            <button type="button" id="startEmailOtpEnable" class="primary dash-btn" disabled>Enable email OTP</button>
+                        </div>
+                    {% endif %}
+                {% endif %}
+            </article>
+
+        </div>
+    </section>
+
 </main>
 
 {% if show_totp_qr %}

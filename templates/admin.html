@@ -30,7 +30,7 @@
         <a href="/dashboard" class="dash-nav-link">Monitoring</a>
         <a href="/analytics" class="dash-nav-link">Analytics</a>
         {% if current_user.is_authenticated and (current_user.role or "")|lower == "admin" %}
-        <a href="/admin" class="dash-nav-link">Admin</a>
+        <a href="/admin" class="dash-nav-link is-active">Admin</a>
         <a href="/ssl" class="dash-nav-link">SSL</a>
         <a href="/audit" class="dash-nav-link">Audit</a>
         {% endif %}
@@ -39,114 +39,174 @@
     </nav>
 </header>
 
-<main class="dash-main container">
-    <section class="card dash-logs-panel" aria-labelledby="admin-heading">
-        <div class="dash-section-head">
-            <h2 id="admin-heading">User management</h2>
-            <p class="dash-section-desc">Create accounts, assign roles, reset MFA, and manage lock status.</p>
-        </div>
-            <div class="field-group dash-filter-grid">
-                <div class="field">
-                    <label for="userSearch">Search (username/email)</label>
-                    <input id="userSearch" type="text" placeholder="e.g., admin or @company.com" maxlength="254">
-                </div>
-                <div class="field" style="max-width: 220px;">
-                    <label for="userSort">Sort</label>
-                    <select id="userSort">
-                        <option value="id">ID</option>
-                        <option value="username">Username</option>
-                        <option value="role">Role</option>
-                        <option value="email">Email</option>
-                        <option value="locked">Lock</option>
-                    </select>
-                </div>
-                <div class="field" style="max-width: 180px;">
-                    <label for="userOrder">Order</label>
-                    <select id="userOrder">
-                        <option value="desc">Desc</option>
-                        <option value="asc">Asc</option>
-                    </select>
-                </div>
-                <div class="field" style="max-width: 180px;">
-                    <label for="userPageSize">Page size</label>
-                    <select id="userPageSize">
-                        <option value="10">10</option>
-                        <option value="25" selected>25</option>
-                        <option value="50">50</option>
-                        <option value="100">100</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field-group">
-                <div class="field">
-                    <label for="newUsername">Username</label>
-                    <input id="newUsername" type="text" placeholder="e.g., soc_analyst1" maxlength="30">
-                </div>
-                <div class="field">
-                    <label for="newEmail">Email (optional)</label>
-                    <input id="newEmail" type="email" placeholder="optional">
-                </div>
-                <div class="field">
-                    <label for="newRole">Role</label>
-                    <select id="newRole">
-                        <option value="soc">SOC Analyst</option>
-                        <option value="admin">IT Administrator</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="newPassword">Temp password</label>
-                    <input id="newPassword" type="text" placeholder="12-64 chars">
-                </div>
-            </div>
-            <div class="field-group">
-                <div class="field" style="max-width: 240px;">
-                    <label>&nbsp;</label>
-                    <button class="primary dash-btn" id="createUserBtn" type="button">Create user</button>
-                </div>
-                <div class="field" style="max-width: 240px;">
-                    <label>&nbsp;</label>
-                    <button class="secondary dash-btn" id="refreshUsersBtn" type="button">Refresh list</button>
-                </div>
-            </div>
-            <div id="adminAlert" class="" aria-live="polite"></div>
+<main class="dash-main container admin-main">
 
-            <div class="field-group" style="align-items: end;">
-                <div class="field" style="max-width: 240px;">
-                    <label>&nbsp;</label>
-                    <button class="secondary dash-btn" id="applyFiltersBtn" type="button">Apply filters</button>
-                </div>
-                <div class="field" style="max-width: 240px;">
-                    <label>&nbsp;</label>
-                    <button class="secondary dash-btn" id="clearFiltersBtn" type="button">Clear filters</button>
-                </div>
-                <div class="field" style="flex: 1;">
-                    <label>&nbsp;</label>
-                    <div id="usersPager" class="pager"></div>
-                </div>
-            </div>
+    <div id="adminAlert" class="" aria-live="polite"></div>
 
-            <div class="dash-table-wrap">
-                <table class="dash-table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Username</th>
-                            <th>Role</th>
-                            <th>Email</th>
-                            <th>MFA</th>
-                            <th>Lock</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="usersTbody">
-                        <tr><td colspan="7" class="empty">Loading…</td></tr>
-                    </tbody>
-                </table>
-            </div>
+    <!-- KPI strip -->
+    <section class="admin-kpi-strip" aria-label="Account summary">
+        <article class="admin-kpi admin-kpi--neutral">
+            <span class="admin-kpi-label">Total users</span>
+            <span class="admin-kpi-value" id="kpiTotalUsers">—</span>
+            <span class="admin-kpi-sub">in the directory</span>
+        </article>
+        <article class="admin-kpi admin-kpi--accent">
+            <span class="admin-kpi-label">Administrators</span>
+            <span class="admin-kpi-value" id="kpiAdmins">—</span>
+            <span class="admin-kpi-sub">full access</span>
+        </article>
+        <article class="admin-kpi admin-kpi--safe">
+            <span class="admin-kpi-label">SOC analysts</span>
+            <span class="admin-kpi-value" id="kpiSoc">—</span>
+            <span class="admin-kpi-sub">monitoring only</span>
+        </article>
+        <article class="admin-kpi admin-kpi--warn">
+            <span class="admin-kpi-label">MFA enabled</span>
+            <span class="admin-kpi-value" id="kpiMfa">—</span>
+            <span class="admin-kpi-sub">TOTP or email OTP</span>
+        </article>
+        <article class="admin-kpi admin-kpi--danger">
+            <span class="admin-kpi-label">Locked accounts</span>
+            <span class="admin-kpi-value" id="kpiLocked">—</span>
+            <span class="admin-kpi-sub">manually locked</span>
+        </article>
     </section>
+
+    <!-- Create user -->
+    <section class="card admin-section" aria-labelledby="create-user-heading">
+        <header class="admin-section-head">
+            <div class="admin-section-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <circle cx="10" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/>
+                    <path d="M3 21c0-4 3-7 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    <path d="M18 14v6M15 17h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div>
+                <h2 id="create-user-heading">Create user</h2>
+                <p class="admin-section-sub">Provision a new account with an initial password. The user is asked to change it on first login.</p>
+            </div>
+        </header>
+
+        <div class="admin-form-grid">
+            <div class="admin-field">
+                <label for="newUsername">Username</label>
+                <input id="newUsername" type="text" placeholder="soc_analyst1" maxlength="30" autocomplete="off">
+            </div>
+            <div class="admin-field">
+                <label for="newEmail">Email <span class="admin-opt">optional</span></label>
+                <input id="newEmail" type="email" placeholder="analyst@company.com" autocomplete="off">
+            </div>
+            <div class="admin-field">
+                <label for="newRole">Role</label>
+                <select id="newRole">
+                    <option value="soc">SOC Analyst</option>
+                    <option value="admin">IT Administrator</option>
+                </select>
+            </div>
+            <div class="admin-field">
+                <label for="newPassword">Temporary password</label>
+                <input id="newPassword" type="text" placeholder="12–64 characters" autocomplete="off">
+            </div>
+        </div>
+
+        <div class="admin-form-actions">
+            <button class="primary dash-btn" id="createUserBtn" type="button">
+                <span aria-hidden="true">+</span> Create user
+            </button>
+        </div>
+    </section>
+
+    <!-- Users list -->
+    <section class="card admin-section" aria-labelledby="users-heading">
+        <header class="admin-section-head">
+            <div class="admin-section-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <circle cx="9" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6"/>
+                    <circle cx="17" cy="10" r="2.5" stroke="currentColor" stroke-width="1.6"/>
+                    <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    <path d="M15 20c0-2.5 1.8-4.5 4-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div>
+                <h2 id="users-heading">Users</h2>
+                <p class="admin-section-sub">Search, sort, and manage every account. Destructive actions require typing the username to confirm.</p>
+            </div>
+        </header>
+
+        <div class="admin-toolbar">
+            <div class="admin-search">
+                <span class="admin-search-icon" aria-hidden="true">⌕</span>
+                <input id="userSearch" type="search" placeholder="Search username or email…" maxlength="254" autocomplete="off" aria-label="Search users">
+            </div>
+
+            <div class="admin-field admin-field--compact">
+                <label for="userSort">Sort</label>
+                <select id="userSort">
+                    <option value="id">ID</option>
+                    <option value="username">Username</option>
+                    <option value="role">Role</option>
+                    <option value="email">Email</option>
+                    <option value="locked">Lock</option>
+                </select>
+            </div>
+
+            <div class="admin-field admin-field--compact">
+                <label for="userOrder">Order</label>
+                <select id="userOrder">
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                </select>
+            </div>
+
+            <div class="admin-field admin-field--compact">
+                <label for="userPageSize">Size</label>
+                <select id="userPageSize">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </div>
+
+            <div class="admin-toolbar-actions">
+                <button class="primary dash-btn admin-toolbar-btn" id="applyFiltersBtn" type="button">Apply</button>
+                <button class="secondary dash-btn admin-toolbar-btn" id="clearFiltersBtn" type="button">Clear</button>
+                <button class="secondary dash-btn admin-toolbar-btn" id="refreshUsersBtn" type="button" aria-label="Refresh list">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M20 12a8 8 0 11-2.34-5.66" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M20 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="dash-table-wrap admin-table-wrap">
+            <table class="dash-table admin-table">
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">ID</th>
+                        <th>User</th>
+                        <th style="width: 170px;">Role</th>
+                        <th>Email</th>
+                        <th style="width: 150px;">MFA</th>
+                        <th style="width: 130px;">Lock</th>
+                        <th style="width: 240px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTbody">
+                    <tr><td colspan="7" class="empty">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="admin-pager-row">
+            <div id="usersPager" class="pager"></div>
+        </div>
+    </section>
+
 </main>
 
 <script src="/static/js/admin.js"></script>
 </body>
 </html>
-
