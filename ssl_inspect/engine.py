@@ -20,9 +20,13 @@ from pathlib import Path
 
 from logging_config import get_logger
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 logger = get_logger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = _REPO_ROOT
 CONF_DIR = REPO_ROOT / "ssl_inspect" / "mitm-conf"
 ADDON_PATH = REPO_ROOT / "ssl_inspect" / "interceptor.py"
 

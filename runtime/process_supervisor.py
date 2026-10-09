@@ -84,13 +84,16 @@ class ProcessSupervisor:
             raise FileNotFoundError(f"SSL engine script not found: {SSL_ENGINE_SCRIPT}")
 
         env = self._base_env()
+        # Do not swallow stderr — when the interceptor exits unexpectedly,
+        # the only clue is what mitmdump printed. Let it reach the parent's
+        # log stream so a failure is visible at the point it happens.
         proc = subprocess.Popen(
-            [sys.executable, str(SSL_ENGINE_SCRIPT)],
+            [sys.executable, "-m", "ssl_inspect.engine"],
             cwd=str(REPO_ROOT),
             env=env,
         )
         self._ssl_proc = proc
-        logger.info("SSL interceptor started pid=%s", proc.pid)
+        logger.info("SSL interceptor started pid=%s (module invocation)", proc.pid)
         return proc
 
     def shutdown(self) -> None:
