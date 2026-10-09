@@ -136,6 +136,15 @@ login_manager.login_view = "login"
 
 @login_manager.unauthorized_handler
 def _unauthorized():
+    audit(
+        "auth.unauthorized",
+        outcome="failure",
+        detail={
+            "path": request.path,
+            "method": request.method,
+            "endpoint": request.endpoint,
+        },
+    )
     if request.path.startswith(("/ids/", "/admin/api/")):
         return api_error("Authentication required", status_code=401, code="unauthorized")
     return redirect(login_manager.login_view)
@@ -143,8 +152,57 @@ def _unauthorized():
 
 @app.errorhandler(Forbidden)
 def _forbidden(e):
+    try:
+        role = (
+            getattr(current_user, "role", None)
+            if getattr(current_user, "is_authenticated", False)
+            else None
+        )
+    except Exception:
+        role = None
+
+    audit(
+        "auth.forbidden",
+        outcome="failure",
+        detail={
+            "path": request.path,
+            "method": request.method,
+            "endpoint": request.endpoint,
+            "role": role,
+        },
+    )
     if request.path.startswith(("/ids/", "/admin/api/")):
         return api_error("Forbidden", status_code=403, code="forbidden")
+    return e
+
+
+@app.errorhandler(429)
+def _rate_limited(e):
+    audit(
+        "rate_limit.exceeded",
+        outcome="failure",
+        detail={
+            "path": request.path,
+            "method": request.method,
+            "endpoint": request.endpoint,
+        },
+    )
+    return e
+
+
+@app.errorhandler(500)
+def _internal_error(e):
+    audit(
+        "server.error",
+        outcome="failure",
+        detail={
+            "path": request.path,
+            "method": request.method,
+            "endpoint": request.endpoint,
+        },
+    )
+    if request.path.startswith(("/ids/", "/admin/api/", "/analytics/", "/audit/")):
+        return api_error("Internal error", status_code=500, code="internal_error")
     return e
 
 
@@ -223,22 +281,37 @@ def strict_request_validation():
     te = request.headers.get("Transfer-Encoding")
     cl = request.headers.get("Content-Length")
 
+    def _reject(reason, status, **extra):
+        audit(
+            "request.rejected",
+            outcome="failure",
+            detail={
+                "reason": reason,
+                "path": request.path,
+                "method": request.method,
+                **extra,
+            },
+        )
+        return {"error": "bad request"}, status
+
     if te and cl:
-        return {"error": "bad request"}, 400
+        return _reject("te_and_cl", 400)
 
     if te and te.lower() != "chunked":
-        return {"error": "bad request"}, 400
+        return _reject("bad_te", 400, te=te)
 
     if cl:
         try:
             if int(cl) <= 0 or int(cl) > app.config["MAX_CONTENT_LENGTH"]:
-                return {"error": "invalid length"}, 413
+                return _reject("invalid_length", 413, content_length=cl)
         except ValueError:
-            return {"error": "bad request"}, 400
+            return _reject("non_numeric_content_length", 400, content_length=cl)
 
     if request.method in ("POST", "PUT", "PATCH"):
         if not request.content_type:
-            return {"error": "content-type required"}, 400
+            return _reject("missing_content_type", 400)
+
+    return None
 
 
 @app.after_request
@@ -281,6 +354,16 @@ def verify_csrf():
 
     candidate = form_token or header_token
     if not session_token or not candidate or not secrets.compare_digest(session_token, candidate):
+        audit(
+            "csrf.failure",
+            outcome="failure",
+            detail={
+                "path": request.path,
+                "method": request.method,
+                "had_session_token": bool(session_token),
+                "had_candidate": bool(candidate),
+            },
+        )
         abort(400, description="Invalid CSRF token")
 
 
@@ -561,6 +644,13 @@ def login():
 
     if locked_until:
         if utcnow() < datetime.fromisoformat(locked_until):
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_id=user_id,
+                actor_username=username,
+                detail={"reason": "account_locked"},
+            )
             return render_login_error("Account locked. Try later.", 403)
 
     try:
@@ -741,15 +831,35 @@ def check_totp():
         )
         if not user:
             _equalize_auth_timing(password)
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_username=username or None,
+                detail={"reason": "unknown_user", "stage": "check_totp"},
+            )
             return api_error("Invalid credentials", status_code=401)
 
         if _check_account_locked(user):
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "account_locked", "stage": "check_totp"},
+            )
             return api_error("Account locked. Try later.", status_code=403)
 
         try:
             ph.verify(user.password_hash, password)
         except VerifyMismatchError:
             _record_password_failure(user.id)
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_password", "stage": "check_totp"},
+            )
             return api_error("Invalid credentials", status_code=401)
 
         # Do NOT reset failed_attempts here: reset happens only after full
@@ -803,21 +913,48 @@ def start_login_email_otp():
         )
         if not user:
             _equalize_auth_timing(password)
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_username=username or None,
+                detail={"reason": "unknown_user", "stage": "start_login_email_otp"},
+            )
             return api_error("Invalid credentials", status_code=401)
 
         if _check_account_locked(user):
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "account_locked", "stage": "start_login_email_otp"},
+            )
             return api_error("Account locked. Try later.", status_code=403)
 
         try:
             ph.verify(user.password_hash, password)
         except VerifyMismatchError:
             _record_password_failure(user.id)
+            audit(
+                "login.failure",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_password", "stage": "start_login_email_otp"},
+            )
             return api_error("Invalid credentials", status_code=401)
 
         # Do NOT reset failed_attempts here: reset only after full MFA
         # success in /login.
 
         if not user.email or not user.email_otp_enabled:
+            audit(
+                "mfa.email.login_start",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "email_otp_not_enabled"},
+            )
             return api_error(
                 "Email-based OTP is not enabled for this account.", status_code=400
             )
@@ -832,8 +969,21 @@ def start_login_email_otp():
         try:
             send_email_otp(user.email, code, purpose="Login verification")
         except Exception:
+            audit(
+                "mfa.email.login_start",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "smtp_send_failed"},
+            )
             return api_error("Failed to send email code.", status_code=500)
 
+        audit(
+            "mfa.email.login_start",
+            actor_id=user.id,
+            actor_username=user.username,
+            detail={"reason": "code_sent"},
+        )
         return api_ok({"ok": True})
     finally:
         s.close()
@@ -902,14 +1052,27 @@ def enable_totp():
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("mfa.totp.enable", outcome="failure", detail={"reason": "user_not_found"})
             return "User not found", 404
         if user.totp_enabled:
+            audit(
+                "mfa.totp.enable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "already_enabled"},
+            )
             return "TOTP already enabled", 400
 
         # Stash candidate secret in session. Only commit after verification.
         session["totp_setup_secret"] = pyotp.random_base32()
         session["totp_setup_qr_shown"] = False
         session["show_totp_qr"] = True
+        audit(
+            "mfa.totp.setup_started",
+            actor_id=user.id,
+            actor_username=user.username,
+        )
     finally:
         s.close()
 
@@ -930,12 +1093,14 @@ def disable_totp():
         otp = request.form.get("otp")
 
     if not password or not otp:
+        audit("mfa.totp.disable", outcome="failure", detail={"reason": "missing_fields"})
         if request.is_json:
             return jsonify({"ok": False, "error": "Missing fields"}), 400
         session["settings_error"] = "Missing fields"
         return redirect("/settings")
 
     if len(password) > MAX_PASSWORD_LEN:
+        audit("mfa.totp.disable", outcome="failure", detail={"reason": "password_too_long"})
         if request.is_json:
             return jsonify({"ok": False, "error": "Invalid password"}), 400
         session["settings_error"] = "Invalid password"
@@ -946,12 +1111,20 @@ def disable_totp():
         user = s.get(DbUser, int(current_user.id))
 
         if not user:
+            audit("mfa.totp.disable", outcome="failure", detail={"reason": "user_not_found"})
             if request.is_json:
                 return jsonify({"ok": False, "error": "User not found"}), 404
             session["settings_error"] = "User not found"
             return redirect("/settings")
 
         if not user.totp_enabled:
+            audit(
+                "mfa.totp.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "not_enabled"},
+            )
             if request.is_json:
                 return jsonify({"ok": False, "error": "TOTP not enabled"}), 400
             session["settings_error"] = "TOTP not enabled"
@@ -960,6 +1133,13 @@ def disable_totp():
         try:
             ph.verify(user.password_hash, password)
         except VerifyMismatchError:
+            audit(
+                "mfa.totp.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_password"},
+            )
             if request.is_json:
                 return jsonify({"ok": False, "error": "Invalid password"}), 400
             session["settings_error"] = "Invalid password"
@@ -967,6 +1147,13 @@ def disable_totp():
 
         totp = pyotp.TOTP(user.totp_secret)
         if not totp.verify(otp, valid_window=1):
+            audit(
+                "mfa.totp.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_otp"},
+            )
             if request.is_json:
                 return jsonify({"ok": False, "error": "Invalid OTP"}), 400
             session["settings_error"] = "Invalid OTP"
@@ -997,21 +1184,25 @@ def verify_new_totp():
     otp = (data.get("otp") or "").strip()
 
     if not otp:
+        audit("mfa.totp.enable", outcome="failure", detail={"reason": "missing_otp"})
         return jsonify({"ok": False, "error": "Missing OTP"}), 400
 
     pending_secret = session.get("totp_setup_secret")
     if not pending_secret:
+        audit("mfa.totp.enable", outcome="failure", detail={"reason": "no_pending_setup"})
         return jsonify({"ok": False, "error": "No pending TOTP setup"}), 400
 
     totp = pyotp.TOTP(pending_secret)
     if not totp.verify(otp, valid_window=1):
         # Do NOT disable or clear anything — allow retry while pending.
+        audit("mfa.totp.enable", outcome="failure", detail={"reason": "bad_otp"})
         return jsonify({"ok": False, "error": "Invalid OTP"}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("mfa.totp.enable", outcome="failure", detail={"reason": "user_not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
 
         user.totp_secret = pending_secret
@@ -1038,22 +1229,27 @@ def change_password():
     otp = (request.form.get("otp") or "").strip()
 
     if not current_password or not new_password:
+        audit("password.change", outcome="failure", detail={"reason": "missing_fields"})
         session["settings_error"] = "Missing password fields"
         return redirect("/settings")
 
     if len(current_password) > MAX_PASSWORD_LEN:
+        audit("password.change", outcome="failure", detail={"reason": "current_password_too_long"})
         session["settings_error"] = "Current password is incorrect"
         return redirect("/settings")
 
     if len(new_password) < 12:
+        audit("password.change", outcome="failure", detail={"reason": "new_password_too_short"})
         session["settings_error"] = "Password must be at least 12 characters"
         return redirect("/settings")
 
     if len(new_password) > MAX_PASSWORD_LEN:
+        audit("password.change", outcome="failure", detail={"reason": "new_password_too_long"})
         session["settings_error"] = f"Password cant be more than {MAX_PASSWORD_LEN} characters"
         return redirect("/settings")
 
     if current_password == new_password:
+        audit("password.change", outcome="failure", detail={"reason": "same_password"})
         session["settings_error"] = "Passwords should be different"
         return redirect("/settings")
 
@@ -1061,21 +1257,43 @@ def change_password():
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("password.change", outcome="failure", detail={"reason": "user_not_found"})
             session["settings_error"] = "User not found"
             return redirect("/settings")
 
         # If TOTP is enabled, require a valid OTP before changing password.
         if user.totp_enabled:
             if not otp or not user.totp_secret:
+                audit(
+                    "password.change",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "otp_required"},
+                )
                 session["settings_error"] = "OTP required"
                 return redirect("/settings")
             if not pyotp.TOTP(user.totp_secret).verify(otp, valid_window=1):
+                audit(
+                    "password.change",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "bad_otp"},
+                )
                 session["settings_error"] = "Invalid OTP"
                 return redirect("/settings")
 
         try:
             ph.verify(user.password_hash, current_password)
         except VerifyMismatchError:
+            audit(
+                "password.change",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_current_password"},
+            )
             session["settings_error"] = "Current password is incorrect"
             return redirect("/settings")
 
@@ -1102,16 +1320,21 @@ def update_profile():
     confirm_password = request.form.get("confirm_password") or ""
 
     if not username:
+        audit("profile.update", outcome="failure", detail={"reason": "missing_username"})
         session["settings_error"] = "Username is required"
         return redirect("/settings")
 
     if not USERNAME_RE.fullmatch(username):
+        audit("profile.update", outcome="failure",
+              detail={"reason": "invalid_username", "username": username})
         session["settings_error"] = (
             "Username must be 3-30 characters (letters, numbers, _ and - only)"
         )
         return redirect("/settings")
 
     if email and not EMAIL_RE.fullmatch(email):
+        audit("profile.update", outcome="failure",
+              detail={"reason": "invalid_email", "email": email})
         session["settings_error"] = "Invalid email address"
         return redirect("/settings")
 
@@ -1123,21 +1346,38 @@ def update_profile():
             .first()
         )
         if existing:
+            audit("profile.update", outcome="failure",
+                  detail={"reason": "duplicate_username", "username": username})
             session["settings_error"] = "Username already taken"
             return redirect("/settings")
 
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("profile.update", outcome="failure", detail={"reason": "user_not_found"})
             session["settings_error"] = "User not found"
             return redirect("/settings")
 
         # Require password re-auth for profile changes.
         if not confirm_password or len(confirm_password) > MAX_PASSWORD_LEN:
+            audit(
+                "profile.update",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "missing_password_confirmation"},
+            )
             session["settings_error"] = "Password confirmation required"
             return redirect("/settings")
         try:
             ph.verify(user.password_hash, confirm_password)
         except VerifyMismatchError:
+            audit(
+                "profile.update",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_password"},
+            )
             session["settings_error"] = "Invalid password"
             return redirect("/settings")
 
@@ -1150,6 +1390,13 @@ def update_profile():
         if avatar and avatar.filename:
             allowed_mimes = {"image/png", "image/jpeg"}
             if avatar.mimetype not in allowed_mimes:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_bad_mimetype", "mimetype": avatar.mimetype},
+                )
                 session["settings_error"] = "Invalid image type for avatar"
                 return redirect("/settings")
 
@@ -1157,6 +1404,13 @@ def update_profile():
             ext = os.path.splitext(filename)[1].lower()
             allowed_exts = {".png", ".jpg", ".jpeg"}
             if not ext or ext not in allowed_exts:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_bad_extension", "ext": ext},
+                )
                 session["settings_error"] = "Invalid image file extension for avatar"
                 return redirect("/settings")
 
@@ -1164,6 +1418,13 @@ def update_profile():
             size = avatar.stream.tell()
             avatar.stream.seek(0)
             if size > 2 * 1024 * 1024:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_too_large", "size": size},
+                )
                 session["settings_error"] = "Avatar image too large (max 2MB)"
                 return redirect("/settings")
 
@@ -1173,12 +1434,26 @@ def update_profile():
                 probe.verify()
                 detected = (probe.format or "").upper()
             except Exception:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_invalid_content"},
+                )
                 session["settings_error"] = "Invalid image content"
                 return redirect("/settings")
             finally:
                 avatar.stream.seek(0)
 
             if detected not in {"JPEG", "PNG"}:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_unsupported_format", "format": detected},
+                )
                 session["settings_error"] = "Invalid image content"
                 return redirect("/settings")
 
@@ -1186,6 +1461,13 @@ def update_profile():
             raw_bytes = avatar.stream.read()
             avatar.stream.seek(0)
             if not _clamav_scan_clean(raw_bytes):
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_malware_detected"},
+                )
                 session["settings_error"] = "Uploaded file failed the malware scan"
                 return redirect("/settings")
 
@@ -1195,9 +1477,27 @@ def update_profile():
                 img = Image.open(avatar.stream)
 
                 if img.width > 2000 or img.height > 2000:
+                    audit(
+                        "profile.update",
+                        outcome="failure",
+                        actor_id=user.id,
+                        actor_username=user.username,
+                        detail={
+                            "reason": "avatar_dimensions_too_large",
+                            "width": img.width,
+                            "height": img.height,
+                        },
+                    )
                     session["settings_error"] = "Image dimensions too large, maximum is 2000x2000"
                     return redirect("/settings")
             except Exception:
+                audit(
+                    "profile.update",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "avatar_decode_failed"},
+                )
                 session["settings_error"] = "Uploaded file is not a valid image"
                 return redirect("/settings")
             finally:
@@ -1264,8 +1564,16 @@ def totp_qr():
         try:
             user = s.get(DbUser, int(current_user.id))
             if not user or not user.totp_secret:
+                audit("mfa.totp.qr", outcome="failure", detail={"reason": "totp_not_enabled"})
                 return "TOTP not enabled", 400
             if user.totp_qr_shown:
+                audit(
+                    "mfa.totp.qr",
+                    outcome="failure",
+                    actor_id=user.id,
+                    actor_username=user.username,
+                    detail={"reason": "already_shown"},
+                )
                 return "TOTP QR code can be shown only once", 400
             secret = user.totp_secret
             user.totp_qr_shown = True
@@ -1274,18 +1582,20 @@ def totp_qr():
             s.close()
     else:
         if session.get(qr_shown_key):
+            audit("mfa.totp.qr", outcome="failure", detail={"reason": "already_shown"})
             return "TOTP QR code can be shown only once", 400
         session[qr_shown_key] = True
 
     uri = pyotp.TOTP(secret).provisioning_uri(
         name=current_user.username,
-        issuer_name="Kamal-Practical-Work-1",
+        issuer_name="Enterprise-AI-Based-IDS",
     )
 
     img = qrcode.make(uri, box_size=4, border=2)
     buf = io.BytesIO()
     img.save(buf)
     buf.seek(0)
+    audit("mfa.totp.qr", detail={"reason": "shown"})
     return send_file(buf, mimetype="image/png")
 
 
@@ -1298,6 +1608,7 @@ def start_email_otp():
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user or not user.email:
+            audit("mfa.email.enable", outcome="failure", detail={"reason": "email_not_set"})
             return jsonify({"ok": False, "error": "Email not set for your account."}), 400
 
         email = user.email
@@ -1314,6 +1625,7 @@ def start_email_otp():
     try:
         send_email_otp(email, code, purpose="Email-based OTP setup")
     except Exception:
+        audit("mfa.email.enable", outcome="failure", detail={"reason": "smtp_send_failed"})
         return jsonify({"ok": False, "error": "Failed to send email."}), 500
 
     return jsonify({"ok": True}), 200
@@ -1332,12 +1644,20 @@ def start_email_otp_disable():
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user or not user.email:
+            audit("mfa.email.disable", outcome="failure", detail={"reason": "email_not_set"})
             return jsonify({"ok": False, "error": "Email not set for your account."}), 400
 
         email = user.email
         email_otp_enabled = bool(user.email_otp_enabled)
 
         if not email_otp_enabled:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "not_enabled"},
+            )
             return jsonify({"ok": False, "error": "Email-based OTP is not enabled."}), 400
 
         code = f"{secrets.randbelow(10**6):06d}"
@@ -1352,6 +1672,7 @@ def start_email_otp_disable():
     try:
         send_email_otp(email, code, purpose="Disable email-based OTP")
     except Exception:
+        audit("mfa.email.disable", outcome="failure", detail={"reason": "smtp_send_failed"})
         return jsonify({"ok": False, "error": "Failed to send email."}), 500
 
     return jsonify({"ok": True}), 200
@@ -1366,29 +1687,59 @@ def verify_email_otp():
     otp = (data.get("otp") or "").strip()
 
     if not otp:
+        audit("mfa.email.enable", outcome="failure", detail={"reason": "missing_code"})
         return jsonify({"ok": False, "error": "Missing code."}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("mfa.email.enable", outcome="failure", detail={"reason": "user_not_found"})
             return jsonify({"ok": False, "error": "User not found."}), 404
 
         stored_code = user.email_otp_code
         expires_str = user.email_otp_code_expires
 
         if not stored_code or not expires_str:
+            audit(
+                "mfa.email.enable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "no_pending_code"},
+            )
             return jsonify({"ok": False, "error": "No pending email OTP setup."}), 400
 
         try:
             expires_at = datetime.fromisoformat(expires_str)
         except Exception:
+            audit(
+                "mfa.email.enable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "invalid_code_state"},
+            )
             return jsonify({"ok": False, "error": "Invalid code state."}), 400
 
         if utcnow() > expires_at:
+            audit(
+                "mfa.email.enable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "code_expired"},
+            )
             return jsonify({"ok": False, "error": "Code expired."}), 400
 
         if not _otp_matches(otp, stored_code):
+            audit(
+                "mfa.email.enable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_code"},
+            )
             return jsonify({"ok": False, "error": "Invalid code."}), 400
 
         user.email_otp_enabled = True
@@ -1411,15 +1762,18 @@ def disable_email_otp():
     otp = (data.get("otp") or "").strip()
 
     if not password or not otp:
+        audit("mfa.email.disable", outcome="failure", detail={"reason": "missing_fields"})
         return jsonify({"ok": False, "error": "Missing fields."}), 400
 
     if len(password) > MAX_PASSWORD_LEN:
+        audit("mfa.email.disable", outcome="failure", detail={"reason": "password_too_long"})
         return jsonify({"ok": False, "error": "Invalid password."}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(current_user.id))
         if not user:
+            audit("mfa.email.disable", outcome="failure", detail={"reason": "user_not_found"})
             return jsonify({"ok": False, "error": "User not found."}), 404
 
         password_hash = user.password_hash
@@ -1428,25 +1782,67 @@ def disable_email_otp():
         expires_str = user.email_otp_code_expires
 
         if not email_otp_enabled:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "not_enabled"},
+            )
             return jsonify({"ok": False, "error": "Email-based OTP is not enabled."}), 400
 
         try:
             ph.verify(password_hash, password)
         except VerifyMismatchError:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_password"},
+            )
             return jsonify({"ok": False, "error": "Invalid password."}), 400
 
         if not stored_code or not expires_str:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "no_pending_code"},
+            )
             return jsonify({"ok": False, "error": "No verification code found. Start disable flow again."}), 400
 
         try:
             expires_at = datetime.fromisoformat(expires_str)
         except Exception:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "invalid_code_state"},
+            )
             return jsonify({"ok": False, "error": "Invalid code state."}), 400
 
         if utcnow() > expires_at:
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "code_expired"},
+            )
             return jsonify({"ok": False, "error": "Code expired."}), 400
 
         if not _otp_matches(otp, stored_code):
+            audit(
+                "mfa.email.disable",
+                outcome="failure",
+                actor_id=user.id,
+                actor_username=user.username,
+                detail={"reason": "bad_code"},
+            )
             return jsonify({"ok": False, "error": "Invalid code."}), 400
 
         user.email_otp_enabled = False
@@ -1626,13 +2022,21 @@ def admin_create_user():
     email = (data.get("email") or "").strip() or None
 
     if role not in {"admin", "soc"}:
+        audit("user.create", outcome="failure",
+              detail={"reason": "invalid_role", "role": role, "username": username})
         return jsonify({"ok": False, "error": "Invalid role"}), 400
     if not USERNAME_RE.fullmatch(username or ""):
+        audit("user.create", outcome="failure",
+              detail={"reason": "invalid_username", "username": username})
         return jsonify({"ok": False, "error": "Invalid username"}), 400
     if len(password) < 12 or len(password) > MAX_PASSWORD_LEN:
+        audit("user.create", outcome="failure",
+              detail={"reason": "invalid_password_length", "username": username})
         return jsonify({"ok": False, "error": "Password must be 12-64 characters"}), 400
 
     if email and not EMAIL_RE.fullmatch(email):
+        audit("user.create", outcome="failure",
+              detail={"reason": "invalid_email", "email": email, "username": username})
         return jsonify({"ok": False, "error": "Invalid email"}), 400
 
     password_hash = ph.hash(password)
@@ -1640,6 +2044,8 @@ def admin_create_user():
     try:
         existing = s.query(DbUser).filter(DbUser.username == username).first()
         if existing:
+            audit("user.create", outcome="failure",
+                  detail={"reason": "duplicate_username", "username": username})
             return jsonify({"ok": False, "error": "Username already exists"}), 400
         user = DbUser(
             username=username,
@@ -1666,11 +2072,15 @@ def admin_create_user():
 @csrf_protect
 def admin_delete_user(user_id: int):
     if int(current_user.id) == int(user_id):
+        audit("user.delete", outcome="failure", target_type="user", target_id=user_id,
+              detail={"reason": "self_delete_attempt"})
         return jsonify({"ok": False, "error": "You cannot delete your own account."}), 400
     s = get_session()
     try:
         user = s.get(DbUser, int(user_id))
         if not user:
+            audit("user.delete", outcome="failure", target_type="user", target_id=user_id,
+                  detail={"reason": "not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
         target_username = user.username
         s.delete(user)
@@ -1694,12 +2104,18 @@ def admin_reset_password(user_id: int):
     data = request.json or {}
     new_password = data.get("new_password") or ""
     if len(new_password) < 12 or len(new_password) > MAX_PASSWORD_LEN:
+        audit("user.reset_password", outcome="failure",
+              target_type="user", target_id=user_id,
+              detail={"reason": "invalid_password_length"})
         return jsonify({"ok": False, "error": "Password must be 12-64 characters"}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(user_id))
         if not user:
+            audit("user.reset_password", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
         user.password_hash = ph.hash(new_password)
         user.failed_attempts = 0
@@ -1724,14 +2140,23 @@ def admin_set_role(user_id: int):
     data = request.json or {}
     role = (data.get("role") or "").strip().lower()
     if role not in {"admin", "soc"}:
+        audit("user.set_role", outcome="failure",
+              target_type="user", target_id=user_id,
+              detail={"reason": "invalid_role", "role": role})
         return jsonify({"ok": False, "error": "Invalid role"}), 400
     if int(current_user.id) == int(user_id) and role != "admin":
+        audit("user.set_role", outcome="failure",
+              target_type="user", target_id=user_id,
+              detail={"reason": "self_demote_attempt"})
         return jsonify({"ok": False, "error": "You cannot remove your own admin role."}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(user_id))
         if not user:
+            audit("user.set_role", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
         old_role = user.role
         user.role = role
@@ -1756,12 +2181,18 @@ def admin_reset_mfa(user_id: int):
     Recovery endpoint: clears TOTP secret and email-OTP settings for a user.
     """
     if int(current_user.id) == int(user_id):
+        audit("user.reset_mfa", outcome="failure",
+              target_type="user", target_id=user_id,
+              detail={"reason": "self_target"})
         return jsonify({"ok": False, "error": "Use Settings to manage your own MFA."}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(user_id))
         if not user:
+            audit("user.reset_mfa", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
 
         user.totp_enabled = False
@@ -1793,12 +2224,18 @@ def admin_set_lock(user_id: int):
     locked = bool(data.get("locked"))
 
     if int(current_user.id) == int(user_id) and locked:
+        audit("user.lock", outcome="failure",
+              target_type="user", target_id=user_id,
+              detail={"reason": "self_lock_attempt"})
         return jsonify({"ok": False, "error": "You cannot lock your own account."}), 400
 
     s = get_session()
     try:
         user = s.get(DbUser, int(user_id))
         if not user:
+            audit("user.lock", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "not_found"})
             return jsonify({"ok": False, "error": "User not found"}), 404
 
         if locked:
@@ -2134,13 +2571,28 @@ def ssl_api_bypass_add():
     reason = (data.get("reason") or "").strip() or None
 
     if match_type not in ("sni", "ip", "cidr"):
+        audit(
+            "ssl.bypass.add",
+            outcome="failure",
+            detail={"reason": "invalid_match_type", "match_type": match_type},
+        )
         return api_error("Invalid match_type", status_code=400, code="invalid_match_type")
     if not pattern or len(pattern) > 255:
+        audit(
+            "ssl.bypass.add",
+            outcome="failure",
+            detail={"reason": "invalid_pattern", "match_type": match_type},
+        )
         return api_error("Invalid pattern", status_code=400, code="invalid_pattern")
 
     # SNI: allow wildcard patterns like "*.example.com"
     if match_type == "sni":
         if not _re.fullmatch(r"[A-Za-z0-9\.\-\*]+", pattern):
+            audit(
+                "ssl.bypass.add",
+                outcome="failure",
+                detail={"reason": "invalid_sni", "pattern": pattern},
+            )
             return api_error("SNI pattern may only contain letters, digits, '.', '-', '*'",
                              status_code=400, code="invalid_sni")
 
@@ -2153,6 +2605,11 @@ def ssl_api_bypass_add():
             )
         ).scalar_one_or_none()
         if existing:
+            audit(
+                "ssl.bypass.add",
+                outcome="failure",
+                detail={"reason": "duplicate", "match_type": match_type, "pattern": pattern},
+            )
             return api_error("Rule already exists", status_code=400, code="duplicate")
 
         rule = SslBypassRule(
@@ -2197,6 +2654,13 @@ def ssl_api_bypass_delete(rule_id: int):
     try:
         row = session.get(SslBypassRule, rule_id)
         if not row:
+            audit(
+                "ssl.bypass.delete",
+                outcome="failure",
+                target_type="bypass_rule",
+                target_id=rule_id,
+                detail={"reason": "not_found"},
+            )
             return api_error("Rule not found", status_code=404, code="not_found")
         detail = {"match_type": row.match_type, "pattern": row.pattern}
         session.delete(row)
@@ -2252,6 +2716,23 @@ def ids_engine_health():
 # --- Sensor telemetry push (ids_engine.py → Web UI stats) ---
 _SENSOR_TOKEN_WARNED = False
 _sensor_nonce_tracker = NonceTracker()
+# De-dupe sensor auth failure audits per (remote_ip, reason). Prevents a
+# misconfigured sensor from filling the audit table with thousands of
+# identical rows between process restarts.
+_SENSOR_AUTH_AUDITED: set[tuple[str, str]] = set()
+
+
+def _audit_sensor_auth_failure_once(remote_ip: str | None, reason: str) -> None:
+    key = (remote_ip or "", reason)
+    if key in _SENSOR_AUTH_AUDITED:
+        return
+    _SENSOR_AUTH_AUDITED.add(key)
+    audit(
+        "sensor.auth_failure",
+        outcome="failure",
+        actor_ip=remote_ip,
+        detail={"reason": reason, "deduped": True},
+    )
 
 
 @app.route("/ids/update", methods=["POST"])
@@ -2276,6 +2757,7 @@ def ids_sensor_update():
                 "ids_engine.py to re-enable sensor telemetry."
             )
             _SENSOR_TOKEN_WARNED = True
+        _audit_sensor_auth_failure_once(request.remote_addr, "token_not_configured")
         return api_error(
             "sensor secret not configured",
             status_code=503,
@@ -2300,6 +2782,7 @@ def ids_sensor_update():
             "Sensor telemetry rejected: %s (remote=%s)",
             reason, request.remote_addr,
         )
+        _audit_sensor_auth_failure_once(request.remote_addr, reason)
         return api_error("unauthorized", status_code=401, code=reason)
 
     body = request.get_json(silent=True) or {}
