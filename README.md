@@ -197,6 +197,7 @@ Copy `env-example` to `.env` and adjust. All configuration is read at process st
 | `IDS_SENSOR_TOKEN` | Shared HMAC secret for signing every telemetry POST to `/ids/update`. Must match on both `ids_engine.py` and `uni-srver.py`. Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `IDS_AUTH_MAX_SKEW_SEC` | Maximum tolerated clock difference between sensor and web UI, in seconds (default: `60`). Increase only if the two hosts are not NTP-synced. |
 | `IDS_AUTH_NONCE_RETENTION_SEC` | How long the server remembers seen nonces to detect replay (default: `300`). Must be ≥ `IDS_AUTH_MAX_SKEW_SEC`. |
+| `IDS_SERVICE_PORTS` | Comma-separated list of ports the IDS host itself exposes (e.g. `5000` for the dashboard). Traffic to these ports is never flagged as `unusual_port`. |
 
 ### IDS Performance Tuning
 
@@ -509,12 +510,14 @@ exposed through an admin-only `/audit` page.
 
 | Category | Actions |
 |----------|---------|
-| Authentication | `login.success`, `login.failure`, `logout` |
-| MFA | `mfa.totp.enable`, `mfa.totp.disable`, `mfa.email.enable`, `mfa.email.disable` |
+| Authentication | `login.success`, `login.failure`, `logout`, `auth.unauthorized`, `auth.forbidden`, `rate_limit.exceeded`, `csrf.failure`, `request.rejected` |
+| MFA | `mfa.totp.enable`, `mfa.totp.disable`, `mfa.totp.setup_started`, `mfa.totp.qr`, `mfa.email.enable`, `mfa.email.disable`, `mfa.email.login_start` |
 | Password | `password.change` |
 | Profile | `profile.update` |
 | User admin | `user.create`, `user.delete`, `user.set_role`, `user.reset_password`, `user.reset_mfa`, `user.lock`, `user.unlock` |
 | SSL management | `ssl.ca_regenerate`, `ssl.bypass.add`, `ssl.bypass.delete` |
+| Sensor telemetry | `sensor.auth_failure` |
+| Server / routing | `server.error`, `route.not_found` |
 
 Each row captures: timestamp, actor ID and username, client IP, action,
 target type and ID, outcome (`success` / `failure` / `denied`), and a JSON
@@ -524,7 +527,8 @@ detail blob with context (old role vs. new role, username before change, etc.).
 
 `/audit` (admin only) shows:
 
-- **KPI cards** — total entries in the last 7 days, failures, distinct actors.
+- **KPI cards** — total entries in the last 7 days, non-success outcomes
+  (`failure` + `denied`), distinct actors.
 - **Filter bar** — by action, actor username, outcome.
 - **Paginated table** — cursor-based; each row opens a JSON detail modal.
 - **Distinct action dropdown** — populated from the DB so it stays in sync
@@ -955,7 +959,7 @@ The supervisor writes a heartbeat file and a PID file under `storage/`. The web 
 - **TLS**: the web UI uses self-signed TLS (`ssl_context="adhoc"`) by default. In production, front it with a reverse proxy (nginx, Caddy) that terminates real certificates. Set `TRUSTED_PROXIES=1` if behind exactly one proxy.
 - **`setcap` on the Python interpreter** grants packet-capture capabilities to *every* script that interpreter runs. For production, prefer a dedicated service user or a wrapper entry point that receives the capabilities.
 - **Packet capture and IDS deployment** should follow your organization's network monitoring policies and legal requirements.
-- **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs and authenticated sessions bypass the *default* limits — the dashboard's own polling generates several hundred requests per hour per open tab, and an authenticated SOC analyst is a trusted principal. Per-endpoint decorators on `/login` (10/min), `/check_totp` (5/min), and the MFA endpoints remain in force regardless. Tune the ceiling with `RATELIMIT_DEFAULT_HOURLY` and `RATELIMIT_DEFAULT_DAILY`. Extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
+- **Rate limiting** is enabled on the Flask app (`flask-limiter`). Loopback IPs and authenticated sessions bypass the *default* limits — the dashboard's own polling generates several hundred requests per hour per open tab, and an authenticated SOC analyst is a trusted principal. Per-endpoint decorators on `/login` (5/min), `/check_totp` (5/min), and the MFA endpoints remain in force regardless. Tune the ceiling with `RATELIMIT_DEFAULT_HOURLY` and `RATELIMIT_DEFAULT_DAILY`. Extend `ALLOWED_IPS` in `uni-srver.py` only for trusted internal networks.
 - **`/metrics` is loopback-only by default.** If you scrape Prometheus from another host, add its IP to `ALLOWED_IPS`, or place a proxy in front that filters the endpoint.
 - **`ip-api.com` free tier is HTTP-only** and can be MITM'd. It contributes only a small weight to final scores; disable with `IPAPI_ENABLED=false` on untrusted networks.
 - **TLS interception is a MITM by design.** Only enable `SSL_DECRYPTION_ENABLED=true` on networks you own or have explicit written consent to monitor. Clients must install your root CA — that CA can forge any certificate for any domain, so protect `ssl_inspect/conf/ids-ca.pem` (chmod 600) and never commit it to source control.

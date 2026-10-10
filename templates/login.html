@@ -127,7 +127,7 @@
             </form>
 
             <p class="login-footnote">
-                Protected by multi-factor authentication and rate limiting.
+                Protected by 2-step verification and rate limiting.
                 Sessions expire after 60 minutes of inactivity.
             </p>
 
@@ -139,10 +139,10 @@
 <div id="otpMethodModal" class="modal-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="otpMethodTitle">
     <div class="modal login-modal">
         <h3 id="otpMethodTitle">Choose verification method</h3>
-        <p class="small">Select how you want to complete 2-step verification.</p>
+        <p class="small">Select how you want to complete multi-factor verification.</p>
         <div class="button-row">
             <button type="button" data-otp-method="totp" id="chooseTotpMethod">
-                Use authenticator app
+                Use an authenticator app
             </button>
             <button type="button" class="secondary" data-otp-method="email" id="chooseEmailMethod">
                 Send code to <span id="otpMaskedEmail"></span>

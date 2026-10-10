@@ -2262,12 +2262,41 @@ def admin_reset_mfa(user_id: int):
 def admin_set_lock(user_id: int):
     data = request.json or {}
     locked = bool(data.get("locked"))
+    duration_hours = data.get("duration_hours")
 
     if int(current_user.id) == int(user_id) and locked:
         audit("user.lock", outcome="failure",
               target_type="user", target_id=user_id,
               detail={"reason": "self_lock_attempt"})
         return jsonify({"ok": False, "error": "You cannot lock your own account."}), 400
+
+    # Resolve the lock duration only when locking — the value is ignored
+    # on unlock. Default of 8 h matches the previous hardcoded behaviour,
+    # so existing API clients that send only {"locked": true} still work.
+    if locked:
+        if duration_hours is None:
+            duration_hours = 8.0
+        try:
+            duration_hours = float(duration_hours)
+        except (TypeError, ValueError):
+            audit("user.lock", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "invalid_duration", "value": str(duration_hours)})
+            return jsonify({"ok": False, "error": "Duration must be a number of hours."}), 400
+
+        # 3 minutes at the low end so a fat-fingered "0" cannot lock for
+        # an imperceptible amount; 8760 h (1 year) at the high end so a
+        # stray "999999" cannot create a permanent lock that nobody
+        # remembers to clear.
+        if not (0.05 <= duration_hours <= 8760):
+            audit("user.lock", outcome="failure",
+                  target_type="user", target_id=user_id,
+                  detail={"reason": "duration_out_of_range", "value": duration_hours})
+            return jsonify({
+                "ok": False,
+                "error": "Duration must be between 0.05 and 8760 hours "
+                         "(3 minutes to 1 year).",
+            }), 400
 
     s = get_session()
     try:
@@ -2279,7 +2308,7 @@ def admin_set_lock(user_id: int):
             return jsonify({"ok": False, "error": "User not found"}), 404
 
         if locked:
-            lock_time = utcnow() + timedelta(hours=8)
+            lock_time = utcnow() + timedelta(hours=duration_hours)
             user.locked_until = lock_time.isoformat()
         else:
             user.locked_until = None
@@ -2290,9 +2319,15 @@ def admin_set_lock(user_id: int):
             "user.lock" if locked else "user.unlock",
             target_type="user",
             target_id=user_id,
-            detail={"username": user.username},
+            detail={
+                "username": user.username,
+                **({"duration_hours": duration_hours} if locked else {}),
+            },
         )
-        return jsonify({"ok": True})
+        return jsonify({
+            "ok": True,
+            "locked_until": user.locked_until if locked else None,
+        })
     finally:
         s.close()
 

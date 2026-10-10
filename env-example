@@ -10,7 +10,7 @@
 # and is safe to commit. Generate secrets with:
 #
 #     python -c "import secrets; print(secrets.token_hex(32))"     # FLASK_SECRET
-#     python -c "import secrets; print(secrets.token_urlsafe(32))" # IDS_SENSOR_TOKEN
+#     python -c "import secrets; print(secrets.token_urlsafe(48))" # IDS_SENSOR_TOKEN
 #
 # Anything in <angle-brackets> is a placeholder that MUST be replaced.
 # Optional features are marked (optional).
@@ -159,6 +159,12 @@ IDS_DANGEROUS_THRESHOLD=0.78
 IDS_PORT_SCAN_THRESHOLD=25
 IDS_PORT_SCAN_WINDOW=8
 
+# Ports the IDS host itself exposes (comma-separated). Traffic to these
+# ports is never flagged as "unusual_port" — you do not need the IDS to
+# warn you about your own dashboard. Set this to whatever the Web UI and
+# any other local services listen on. Example: IDS_SERVICE_PORTS=5000
+IDS_SERVICE_PORTS=
+
 # Flood detection: packets from one source within a rolling window.
 IDS_FLOOD_THRESHOLD=120
 IDS_FLOOD_WINDOW=3
@@ -230,8 +236,10 @@ IDS_AUTH_NONCE_RETENTION_SEC=300
 # =============================================================================
 # TLS interception (SSL decryption) — optional
 # =============================================================================
-# NGFW-style HTTPS decryption via mitmproxy. Requires the `ssl` extra:
-#     pip install -e ".[ssl]"
+# NGFW-style HTTPS decryption via sslsplit — a system package, not a
+# Python dependency. Install with one of:
+#     sudo dnf install sslsplit -y     # Fedora / RHEL
+#     sudo apt install sslsplit        # Debian / Ubuntu
 #
 # Enabling this intercepts and terminates TLS. Only enable on networks you
 # own or have explicit written authorization to monitor.
@@ -242,6 +250,11 @@ SSL_INTERCEPT_PORT=8443
 
 # Bind address for the interceptor.
 SSL_INTERCEPT_HOST=0.0.0.0
+
+# How often the interceptor reconciles iptables SNI bypass rules with the
+# database. The web UI also triggers an immediate reconciliation on every
+# rule change, so this is the maximum staleness for out-of-band edits.
+SSL_BYPASS_SYNC_SEC=30
 
 # =============================================================================
 # Threat Intelligence

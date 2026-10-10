@@ -192,10 +192,34 @@ function renderUsers(users, meta) {
       const confirmText = `Type "${u.username}" to ${action} this account:`;
       const typed = prompt(confirmText) || "";
       if (typed !== u.username) return;
+
+      const body = { locked: !u.locked_until };
+
+      // When locking, ask how long. Default "8" preserves the old
+      // fixed-duration behaviour for an operator who just hits Enter.
+      // Cancelling the second prompt aborts the whole lock so a
+      // half-typed flow never leaves the account in an unexpected state.
+      if (!u.locked_until) {
+        const raw = prompt(
+          "Lock duration in hours:\n" +
+          "  0.05 = 3 min    |   1 = 1 hour\n" +
+          "  24 = 1 day      |   168 = 1 week\n" +
+          "  720 = 30 days   |   8760 = 1 year",
+          "8",
+        );
+        if (raw === null) return; // user cancelled
+        const hours = Number(raw);
+        if (!Number.isFinite(hours) || hours <= 0) {
+          showAdminAlert("Invalid duration — enter a positive number of hours.", "error");
+          return;
+        }
+        body.duration_hours = hours;
+      }
+
       try {
-        await api(`/admin/api/users/${u.id}/set_lock`, {
+        const res = await api(`/admin/api/users/${u.id}/set_lock`, {
           method: "POST",
-          body: { locked: !u.locked_until },
+          body,
         });
         showAdminAlert(`User ${action}ed.`, "success");
         await refreshUsers();
