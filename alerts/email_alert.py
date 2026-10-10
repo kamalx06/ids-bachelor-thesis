@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import os
 import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate
 
@@ -62,41 +65,28 @@ def _missing_config() -> str | None:
     return ", ".join(missing) if missing else None
 
 
-def send_alert(subject: str, message: str) -> bool:
+def send_alert(subject, message, html=None, attachments=None):
     """
-    Send one alert email. Returns True if the SMTP server accepted it,
-    False on any failure including missing configuration.
-
-    This function never raises. The caller cannot be broken by an alert
-    delivery problem — that is a hard requirement for a hot path like
-    packet analysis.
+    Send one alert email. `html` optionally supplies a rich-text alternative;
+    `attachments` is a list of (filename, mime_type, bytes) tuples.
     """
-    global _config_warned
+    ...
+    if html or attachments:
+        msg = MIMEMultipart("mixed")
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(message, "plain", "utf-8"))
+        if html:
+            alt.attach(MIMEText(html, "html", "utf-8"))
+        msg.attach(alt)
+        for name, mime, data in attachments or []:
+            part = MIMEBase(*mime.split("/", 1))
+            part.set_payload(data)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=name)
+            msg.attach(part)
+    else:
+        msg = MIMEText(message, "plain", "utf-8")
 
-    missing = _missing_config()
-    if missing:
-        if not _config_warned:
-            logger.warning(
-                "Email alerts are disabled: %s not set. "
-                "Configure them in .env to enable alerting.",
-                missing,
-            )
-            _config_warned = True
-        return False
-
-    msg = MIMEText(message, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = SMTP_FROM
     msg["To"] = ", ".join(RECIPIENTS)
-    msg["Date"] = formatdate(localtime=True)
-
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM, RECIPIENTS, msg.as_string())
-        logger.info("Alert sent: %s (%d recipient(s))", subject, len(RECIPIENTS))
-        return True
-    except Exception:
-        logger.error("Email alert failed (subject=%s)", subject, exc_info=True)
-        return False

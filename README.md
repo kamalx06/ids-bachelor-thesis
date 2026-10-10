@@ -1,4 +1,4 @@
-# Enterprise AI based   IDS
+# Enterprise AI based IDS
 
 An AI-powered Intrusion Detection System with a Flask web dashboard, real-time
 packet analysis, hybrid machine-learning classification, threat-intelligence
@@ -488,8 +488,18 @@ risk score crosses that cutoff.
 | Variable | Description |
 |----------|-------------|
 | `IDS_BURST_ALERT_WINDOW_SEC` | Rolling window in seconds (default: `1200`, i.e. 20 minutes) |
-| `IDS_BURST_ALERT_MIN_EVENTS` | Threshold within window (default: `10`) |
+| `IDS_BURST_ALERT_MIN_EVENTS` | Fast-burst threshold within window (default: `10`) |
 | `IDS_BURST_ALERT_DEDUP_SEC` | Per-IP suppression after an alert fires (default: `600`, i.e. 10 minutes) |
+| `IDS_BURST_ALERT_SLOW_RISK` | Minimum risk score to count toward the slow-scan tier (default: `0.45`) |
+| `IDS_BURST_ALERT_SLOW_MIN_EVENTS` | Slow-scan threshold — fires when this many suspicious-but-elevated events arrive in the window (default: `50`) |
+| `IDS_BURST_ALERT_GLOBAL_DEDUP_SEC` | Minimum seconds between ANY two burst emails across all IPs (default: `30`). Protects the mail channel from distributed scans. Suppressed alerts are counted and reported in the next email that goes out. |
+
+The email body includes source direction (internal/external), reputation
+verdict and score when cached, first-seen history, severity tier, top
+targets, top URLs, and MITRE techniques. Two thresholds are active in
+parallel: a **fast burst** (many dangerous events) and a **slow scan**
+(many elevated-but-not-yet-dangerous events), the latter catching
+intrusions that never cross the dangerous threshold on any single event.
 
 ### Audit & Retention
 
@@ -960,6 +970,17 @@ python3 -m ai.retrainer --seed-csv ai/data/cic_ids.csv --seed-max-rows 5000 --tr
 ```bash
 python3 -m storage.analytics --backfill --days 30
 ```
+
+### Web UI login loops back to `/login` after successful credentials
+
+- If `WEB_UI_SSL=false` in `.env` and you're accessing over HTTPS, or the
+  reverse: session cookies may be rejected by the browser. The cookie name
+  is `__Host-ids_session` when TLS is on and `ids_session` otherwise. Check
+  DevTools → Application → Cookies — a `__Host-` cookie with no `Secure`
+  flag is discarded by every modern browser.
+- Confirm `TRUSTED_PROXIES` matches the number of reverse proxies in front
+  of the app. If it is 0 but a proxy is present, the session binding in
+  Flask-Login may invalidate on every request.
 
 ### SSL interceptor not starting
 

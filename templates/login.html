@@ -89,6 +89,9 @@
 
             <form id="loginForm" method="POST" action="/login" class="login-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {% if next_url %}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                {% endif %}
 
                 <div id="passwordStep" class="login-step">
                     <div class="login-field">

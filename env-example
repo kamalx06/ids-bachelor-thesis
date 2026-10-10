@@ -305,11 +305,31 @@ ZEEK_CACHE_IDLE_SEC=3600
 # =============================================================================
 # Email burst alerts — optional
 # =============================================================================
-# Fires when a single source IP exceeds N dangerous events within a rolling
-# window. Requires SMTP_* to be configured.
+# Enable: requires SMTP_* above and ALERT_RECIPIENTS to be set. Without
+# both, alerts are silently skipped and the IDS runs normally.
+#
+# Two tiers are supported:
+#   - Fast burst: many DANGEROUS events in the window. Default 10 events.
+#   - Slow scan:  many suspicious-but-elevated events (risk >= SLOW_RISK)
+#                 in the same window. Fires at a much higher count so
+#                 ordinary noise does not trigger it. Catches slow
+#                 intrusions that never cross the dangerous threshold.
+#
+# After an alert fires for a given IP, further alerts for the same IP are
+# suppressed for DEDUP_SEC. A global limiter additionally caps how often
+# any alert can be sent, so a distributed scan producing many source IPs
+# cannot flood the mailbox.
 IDS_BURST_ALERT_WINDOW_SEC=1200
 IDS_BURST_ALERT_MIN_EVENTS=10
 IDS_BURST_ALERT_DEDUP_SEC=600
+
+# Slow-scan tier
+IDS_BURST_ALERT_SLOW_RISK=0.45
+IDS_BURST_ALERT_SLOW_MIN_EVENTS=50
+
+# Minimum seconds between ANY two burst alert emails. Suppressed alerts
+# are counted and reported in the next email that does go out.
+IDS_BURST_ALERT_GLOBAL_DEDUP_SEC=30
 
 # =============================================================================
 # Runtime feature flags

@@ -600,7 +600,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (topIpChart || topDomainChart || dnsTunnelChart) {
-      const byIp = new Map();
+      // Accumulate as { sum, count } so we can rank by average score.
+      // Ranking by average keeps the value in the 0–1 range and prevents
+      // a chatty-but-benign IP (the default gateway, the DNS resolver)
+      // from dominating the chart by sheer event volume.
+      const byIp = new Map();          // ip -> { sum, count }
       const byDomain = new Map();
       const dnsByTime = new Map();
 
@@ -608,8 +612,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         const score = effectiveTrendScore(e);
         const keyIp = e.src_ip || e.dst_ip || null;
         if (keyIp) {
-          const prev = byIp.get(keyIp) || 0;
-          byIp.set(keyIp, Math.max(prev, score));
+            const prev = byIp.get(keyIp) || { sum: 0, count: 0 };
+            prev.sum += score;
+            prev.count += 1;
+            byIp.set(keyIp, prev);
         }
         const host = hostFromEvent(e);
         if (host) {
@@ -624,7 +630,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       if (topIpChart) {
-        let entries = [...byIp.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+        // Convert { sum, count } → average, then rank.
+        let entries = [...byIp.entries()]
+            .map(([ip, s]) => [ip, s.count ? s.sum / s.count : 0])
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10);
         if (entries.length === 0 && stats && Array.isArray(stats.dangerous_ips) && stats.dangerous_ips.length) {
           entries = stats.dangerous_ips.slice(0, 10).map((ip) => [ip, 1]);
         }
@@ -1102,6 +1112,44 @@ document.addEventListener("DOMContentLoaded", async () => {
       closeBtn.focus();
     });
   }
+
+  // Pre-fill filter fields from URL parameters so deep links from burst
+  // alert emails land on a pre-filtered search rather than an empty one.
+  // Recognised parameters: ip, src_ip, dst_ip, start_time (epoch seconds).
+  (function applyUrlFilters() {
+    const params = new URLSearchParams(window.location.search);
+
+    const ip = params.get("ip");
+    if (ip && el("qIp")) el("qIp").value = ip;
+
+    const srcIp = params.get("src_ip");
+    if (srcIp && el("qSrcIp")) el("qSrcIp").value = srcIp;
+
+    const dstIp = params.get("dst_ip");
+    if (dstIp && el("qDstIp")) el("qDstIp").value = dstIp;
+
+    const startTs = params.get("start_time");
+    if (startTs && el("qStart")) {
+      const n = Number(startTs);
+      if (Number.isFinite(n) && n > 0) {
+        // datetime-local inputs want "YYYY-MM-DDTHH:MM:SS" in local time.
+        const d = new Date(n * 1000);
+        const off = d.getTimezoneOffset();
+        const local = new Date(d.getTime() - off * 60 * 1000);
+        el("qStart").value = local.toISOString().slice(0, 19);
+      }
+    }
+
+    // If any recognised parameter was present, run the search once so the
+    // table loads with the filter already applied.
+    if (params.has("ip") || params.has("src_ip") || params.has("dst_ip")) {
+      // runSearch is defined further down; defer to the next tick so the
+      // handler is wired up.
+      setTimeout(() => {
+        if (typeof runSearch === "function") runSearch();
+      }, 0);
+    }
+  })();
 
   await Promise.allSettled([
     refreshIdsHealth(),

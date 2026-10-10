@@ -125,6 +125,10 @@ def _process_packet(packet_dict: dict) -> None:
         classification=label,
         risk_score=risk_score,
         reasons=reasons,
+        dst_ip=data.get("dst_ip"),
+        dst_port=data.get("dst_port"),
+        url=data.get("url"),
+        mitre=result.get("mitre"),
     )
 
     log_entry = {

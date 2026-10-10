@@ -69,8 +69,9 @@ app = Flask(__name__)
 # generated at import time) so that sessions/CSRF tokens stay valid across
 # process restarts and across multiple worker processes in production.
 _use_ssl = (os.getenv("WEB_UI_SSL", "true") or "true").lower() == "true"
+
 app.config.update(
-    SESSION_COOKIE_NAME="__Host-ids_session",
+    SESSION_COOKIE_NAME="__Host-ids_session" if _use_ssl else "ids_session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=_use_ssl,
     SESSION_COOKIE_SAMESITE="Strict",
@@ -149,7 +150,17 @@ def _unauthorized():
     )
     if request.path.startswith(("/ids/", "/admin/api/")):
         return api_error("Authentication required", status_code=401, code="unauthorized")
-    return redirect(login_manager.login_view)
+
+    # Preserve the original URL — including its query string — so the login
+    # flow can send the user back to the page they were trying to reach.
+    # Without this, a deep link from a burst alert (e.g. /dashboard?ip=X)
+    # would land on a bare /dashboard after login and the filters would be
+    # lost. request.full_path is used instead of request.url so the redirect
+    # stays relative to this host.
+    from urllib.parse import quote
+
+    target = request.full_path.rstrip("?") or "/"
+    return redirect(f"/login?next={quote(target, safe='/?=&')}")
 
 
 @app.errorhandler(Forbidden)
@@ -625,13 +636,51 @@ def index():
         return redirect("/dashboard")
     return redirect("/login")
 
+def _safe_next_url(default: str = "/dashboard") -> str:
+    """
+    Return the post-login redirect target.
+
+    Reads the `next` parameter from the query string (GET) or form body
+    (POST), and returns it only if it is a relative path on this host.
+    Absolute URLs and protocol-relative URLs (`//evil.example.com`) are
+    rejected to prevent open-redirect abuse via a crafted login link.
+    """
+    from urllib.parse import urlparse
+
+    candidate = (
+        request.form.get("next")
+        or request.args.get("next")
+        or ""
+    ).strip()
+
+    if not candidate:
+        return default
+
+    # Must be an absolute path, not a full URL.
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return default
+
+    # Reject protocol-relative URLs (`//host/path`).
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return default
+
+    # Also reject anything that would escape the app (e.g. /../etc/passwd).
+    # The URL parser normalises `..` before this check for well-formed
+    # URLs; anything left that starts with a slash is fine.
+    return candidate
 
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per minute")
 @csrf_protect
 def login():
     if request.method == "GET":
-        return render_template("login.html")
+        # Surface the `next` parameter to the template so it can be
+        # carried through the login form (including the OTP step).
+        return render_template(
+            "login.html",
+            next_url=_safe_next_url(default=""),
+        )
 
     def render_login_error(message, status_code=401):
         return render_template("login.html", error=message), status_code
@@ -843,7 +892,7 @@ def login():
     finally:
         s.close()
 
-    return redirect("/dashboard")
+    return redirect(_safe_next_url())
 
 
 @app.route("/check_totp", methods=["POST"])
