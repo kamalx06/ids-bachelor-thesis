@@ -28,6 +28,142 @@ function fmtTs(ts) {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
+/**
+ * Compact human-readable summary of an audit entry's `detail` blob,
+ * tailored to the action. Answers "what actually changed" without the
+ * reader having to open the modal and parse JSON.
+ *
+ * Falls back to the first two scalar fields for unknown actions, and
+ * returns an empty string when there is nothing useful to show.
+ */
+function describeEntry(r) {
+  const d = r.detail || {};
+  const action = String(r.action || "");
+  const targetLabel = r.target_type
+    ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}`
+    : "";
+
+  switch (action) {
+    case "user.set_role":
+      return `${d.username || targetLabel}: ${d.old_role || "?"} → ${d.new_role || "?"}`;
+    case "user.create":
+      return `Created ${d.username || "?"} (${d.role || "?"})${d.email ? ", " + d.email : ""}`;
+    case "user.delete":
+      return `Deleted ${d.username || targetLabel}`;
+    case "user.reset_password":
+      return `Reset password for ${d.username || targetLabel}`;
+    case "user.reset_mfa":
+      return `Reset MFA for ${d.username || targetLabel}`;
+    case "user.lock":
+      return d.duration_hours != null
+        ? `Locked ${d.username || targetLabel} for ${d.duration_hours}h`
+        : `Locked ${d.username || targetLabel}`;
+    case "user.unlock":
+      return `Unlocked ${d.username || targetLabel}`;
+    case "login.success": {
+      const flags = [];
+      if (d.totp_enabled) flags.push("TOTP");
+      if (d.email_otp_enabled) flags.push("email OTP");
+      return flags.length ? `MFA: ${flags.join(" + ")}` : "No MFA";
+    }
+    case "login.failure": {
+      const parts = [];
+      if (d.reason) parts.push(d.reason);
+      if (d.attempts != null) parts.push(`attempt ${d.attempts}`);
+      if (d.stage) parts.push(`[${d.stage}]`);
+      // The username the caller tried. Present when the caller supplied
+      // one at all — not set for bare scanner traffic.
+      if (d.username && d.username !== r.actor_username) {
+        parts.push(`as "${d.username}"`);
+      }
+      return parts.join(" ");
+    }
+    case "logout":
+      return "";
+    case "password.change":
+      return "Password changed";
+    case "profile.update": {
+      const parts = [];
+      if (d.username_changed) {
+        parts.push(d.old_username && d.new_username
+          ? `username: ${d.old_username} → ${d.new_username}`
+          : "username");
+      }
+      if (d.email_changed) {
+        const oldE = d.old_email || "(none)";
+        const newE = d.new_email || "(none)";
+        parts.push(`email: ${oldE} → ${newE}`);
+      }
+      if (d.avatar_changed) parts.push("avatar");
+      return parts.join("; ");
+    }
+    case "mfa.totp.enable":
+      return d.reason ? `reason: ${d.reason}` : "TOTP enabled";
+    case "mfa.totp.disable":
+      return d.reason ? `reason: ${d.reason}` : "TOTP disabled";
+    case "mfa.totp.setup_started":
+      return "TOTP setup started";
+    case "mfa.totp.qr":
+      return d.reason ? `reason: ${d.reason}` : "";
+    case "mfa.email.enable":
+      return d.reason ? `reason: ${d.reason}` : "Email OTP enabled";
+    case "mfa.email.disable":
+      return d.reason ? `reason: ${d.reason}` : "Email OTP disabled";
+    case "mfa.email.login_start":
+      return d.reason || "";
+    case "ssl.ca_regenerate":
+      if (d.error) return `Failed: ${d.error}`;
+      return d.common_name ? `Regenerated ${d.common_name}` : "Regenerated root CA";
+    case "ssl.bypass.add":
+      return d.pattern
+        ? `${d.match_type || "?"}: ${d.pattern}${d.reason ? ` (${d.reason})` : ""}`
+        : (d.reason || "");
+    case "ssl.bypass.delete":
+      return d.pattern ? `${d.match_type || "?"}: ${d.pattern}` : "";
+    case "sensor.auth_failure":
+      return d.reason ? `reason: ${d.reason}` : "";
+    case "auth.unauthorized":
+    case "auth.forbidden":
+      return d.path || "";
+    case "rate_limit.exceeded":
+    case "csrf.failure":
+    case "server.error":
+      return d.path || "";
+    case "request.rejected":
+      return [d.path, d.reason].filter(Boolean).join(" — ");
+    case "route.not_found":
+      return d.path || "";
+    case "ssl.ca.download": {
+      if (d.reason) return `Failed: ${d.reason}`;
+      const cn = d.common_name || "root CA";
+      return d.valid_until
+        ? `Downloaded ${cn}, exp ${String(d.valid_until).slice(0, 10)}`
+        : `Downloaded ${cn}`;
+    }
+    case "audit.read": {
+      const f = d.filters || {};
+      // Only user-chosen filters are recorded now, so a simple join is
+      // enough. Empty filters means the analyst opened the page with no
+      // constraints — that's the "just viewing the trail" case.
+      const parts = Object.entries(f).map(([k, v]) => `${k}=${v}`);
+      return parts.length ? `Viewed trail — ${parts.join(", ")}` : "Viewed trail";
+    }
+  }
+
+  // Unknown action: surface up to two scalar key=value pairs so the reader
+  // gets *some* signal without opening the modal.
+  if (d && typeof d === "object") {
+    const parts = [];
+    for (const [k, v] of Object.entries(d)) {
+      if (v == null || v === "" || typeof v === "object") continue;
+      parts.push(`${k}: ${v}`);
+      if (parts.length >= 2) break;
+    }
+    return parts.join(", ");
+  }
+  return "";
+}
+
 // Cursor stack: index 0 is the first page (null cursor).
 // Advancing pushes onto the stack; going back pops.
 let cursorStack = [null];
@@ -43,7 +179,7 @@ function renderTable(rows) {
   if (!rows.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 6; td.className = "empty"; td.textContent = "No audit entries match your filters.";
+    td.colSpan = 7; td.className = "empty"; td.textContent = "No audit entries match your filters.";
     tr.appendChild(td); tbody.appendChild(tr);
     return;
   }
@@ -55,7 +191,6 @@ function renderTable(rows) {
     tr.setAttribute("role", "button");
 
     const ts = fmtTs(r.ts);
-    const actor = r.actor_username || (r.actor_id ? `user #${r.actor_id}` : "—");
     const target = r.target_type
       ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}`
       : "—";
@@ -67,7 +202,13 @@ function renderTable(rows) {
     tdTs.textContent = ts;
     tr.appendChild(tdTs);
 
-    // Actor
+    // Actor — four cases:
+    //   1. actor_username present → the real identity
+    //   2. actor_id but no username → user record exists but was deleted
+    //      or the row predates the username column being populated
+    //   3. no actor at all, action starts with "auth."/"csrf."/"rate_limit."/
+    //      "route." → rejected before authentication; label as "anonymous"
+    //   4. no actor, everything else → "system" (sensor, worker, timer)
     const tdActor = document.createElement("td");
     tdActor.className = "audit-cell";
     if (r.actor_username) {
@@ -79,9 +220,24 @@ function renderTable(rows) {
       const muted = document.createElement("span");
       muted.className = "audit-actor audit-actor--muted";
       muted.textContent = `user #${r.actor_id}`;
+      muted.title = "Account no longer in the directory";
       tdActor.appendChild(muted);
     } else {
-      tdActor.textContent = "—";
+      const action = String(r.action || "");
+      const preAuth =
+        action.startsWith("auth.") ||
+        action.startsWith("csrf.") ||
+        action.startsWith("rate_limit.") ||
+        action.startsWith("route.") ||
+        action.startsWith("request.");
+      const label = preAuth ? "anonymous" : "system";
+      const muted = document.createElement("span");
+      muted.className = "audit-actor audit-actor--muted";
+      muted.textContent = label;
+      muted.title = preAuth
+        ? "Request was rejected before authentication"
+        : "No interactive user — emitted by a background process";
+      tdActor.appendChild(muted);
     }
     tr.appendChild(tdActor);
 
@@ -99,6 +255,20 @@ function renderTable(rows) {
     tdTarget.className = "audit-cell audit-cell--mono";
     tdTarget.textContent = target;
     tr.appendChild(tdTarget);
+
+    // Details — short human-readable summary derived from the JSON blob.
+    // The modal still shows the full JSON for anything not covered here.
+    const tdDetails = document.createElement("td");
+    tdDetails.className = "audit-cell audit-cell--details";
+    const summary = describeEntry(r);
+    if (summary) {
+      tdDetails.textContent = summary;
+      tdDetails.title = summary;
+    } else {
+      tdDetails.textContent = "—";
+      tdDetails.classList.add("audit-cell--muted");
+    }
+    tr.appendChild(tdDetails);
 
     // Outcome — colored pill via CSS classes
     const tdOutcome = document.createElement("td");
@@ -201,10 +371,20 @@ async function loadStats() {
 async function loadEntries() {
   showAlert("", "info");
   try {
+    const toEpoch = (id) => {
+      const v = el(id)?.value;
+      if (!v) return "";
+      const ms = new Date(v).getTime();
+      return Number.isFinite(ms) ? Math.floor(ms / 1000) : "";
+    };
     const params = {
       action: el("auditFilterAction")?.value || "",
       actor: el("auditFilterActor")?.value?.trim() || "",
+      actor_ip: el("auditFilterIp")?.value?.trim() || "",
+      target_type: el("auditFilterTargetType")?.value || "",
       outcome: el("auditFilterOutcome")?.value || "",
+      start_time: toEpoch("auditFilterStart"),
+      end_time: toEpoch("auditFilterEnd"),
       limit: 100,
     };
     const cursor = cursorStack[cursorIndex];
@@ -251,12 +431,43 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadEntries();
   });
   el("auditResetBtn")?.addEventListener("click", () => {
-    el("auditFilterAction").value = "";
-    el("auditFilterActor").value = "";
-    el("auditFilterOutcome").value = "";
+    [
+      "auditFilterAction", "auditFilterActor", "auditFilterIp",
+      "auditFilterTargetType", "auditFilterOutcome",
+      "auditFilterStart", "auditFilterEnd",
+    ].forEach((id) => { const n = el(id); if (n) n.value = ""; });
+    document.querySelectorAll(".audit-preset-btn.is-active")
+      .forEach((btn) => btn.classList.remove("is-active"));
     cursorStack = [null];
     cursorIndex = 0;
     loadEntries();
+  });
+
+  document.querySelectorAll(".audit-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const hours = Number(btn.dataset.hours || "0");
+      document.querySelectorAll(".audit-preset-btn.is-active")
+        .forEach((b) => b.classList.remove("is-active"));
+
+      if (hours === 0) {
+        el("auditFilterStart").value = "";
+        el("auditFilterEnd").value = "";
+      } else {
+        const now = Date.now();
+        const start = new Date(now - hours * 3600 * 1000);
+        const end = new Date(now);
+        const toLocal = (d) => {
+          const off = d.getTimezoneOffset();
+          return new Date(d.getTime() - off * 60 * 1000).toISOString().slice(0, 19);
+        };
+        el("auditFilterStart").value = toLocal(start);
+        el("auditFilterEnd").value = toLocal(end);
+        btn.classList.add("is-active");
+      }
+      cursorStack = [null];
+      cursorIndex = 0;
+      loadEntries();
+    });
   });
 
   try {

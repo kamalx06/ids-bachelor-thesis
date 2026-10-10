@@ -63,28 +63,63 @@
 
     <!-- Filters -->
     <section class="card audit-filters-card" aria-label="Filters">
-        <div class="audit-filters-row">
-            <div class="audit-field audit-field--grow">
-                <label for="auditFilterAction">Action</label>
-                <select id="auditFilterAction"><option value="">Any action</option></select>
+        <div class="audit-filters-body">
+
+            <div class="audit-filter-section">
+                <span class="audit-filter-section-label">Identity &amp; action</span>
+                <div class="audit-filter-grid">
+                    <div class="audit-field">
+                        <label for="auditFilterAction">Action</label>
+                        <select id="auditFilterAction"><option value="">Any action</option></select>
+                    </div>
+                    <div class="audit-field">
+                        <label for="auditFilterActor">Actor username</label>
+                        <input id="auditFilterActor" type="search" placeholder="e.g., admin" maxlength="64" autocomplete="off">
+                    </div>
+                    <div class="audit-field">
+                        <label for="auditFilterIp">Client IP</label>
+                        <input id="auditFilterIp" type="search" placeholder="e.g., 192.168.1.10" maxlength="45" autocomplete="off">
+                    </div>
+                    <div class="audit-field">
+                        <label for="auditFilterTargetType">Target type</label>
+                        <select id="auditFilterTargetType">
+                            <option value="">Any target</option>
+                            <option value="user">user</option>
+                            <option value="ca">ca</option>
+                            <option value="bypass_rule">bypass_rule</option>
+                        </select>
+                    </div>
+                    <div class="audit-field">
+                        <label for="auditFilterOutcome">Outcome</label>
+                        <select id="auditFilterOutcome">
+                            <option value="">Any outcome</option>
+                            <option value="success">Success</option>
+                            <option value="failure">Failure</option>
+                            <option value="denied">Denied</option>
+                        </select>
+                    </div>
+                </div>
             </div>
-            <div class="audit-field audit-field--grow">
-                <label for="auditFilterActor">Actor username</label>
-                <input id="auditFilterActor" type="search" placeholder="e.g., admin" maxlength="64" autocomplete="off">
+
+            <div class="audit-filter-section">
+                <span class="audit-filter-section-label">Time range (UTC)</span>
+                <div class="audit-filter-grid audit-filter-grid--time">
+                    <div class="audit-field">
+                        <label for="auditFilterStart">From</label>
+                        <input id="auditFilterStart" type="datetime-local" step="1">
+                    </div>
+                    <div class="audit-field">
+                        <label for="auditFilterEnd">To</label>
+                        <input id="auditFilterEnd" type="datetime-local" step="1">
+                    </div>
+                </div>
             </div>
-            <div class="audit-field">
-                <label for="auditFilterOutcome">Outcome</label>
-                <select id="auditFilterOutcome">
-                    <option value="">Any outcome</option>
-                    <option value="success">Success</option>
-                    <option value="failure">Failure</option>
-                    <option value="denied">Denied</option>
-                </select>
-            </div>
-            <div class="audit-filters-actions">
+
+            <div class="audit-filter-actions">
                 <button class="primary dash-btn" id="auditApplyBtn" type="button">Apply filters</button>
                 <button class="secondary dash-btn" id="auditResetBtn" type="button">Reset</button>
             </div>
+
         </div>
     </section>
 
@@ -104,14 +139,15 @@
                     <tr>
                         <th style="width: 190px;">Timestamp (UTC)</th>
                         <th style="width: 160px;">Actor</th>
-                        <th>Action</th>
-                        <th>Target</th>
+                        <th style="width: 180px;">Action</th>
+                        <th style="width: 130px;">Target</th>
+                        <th>Details</th>
                         <th style="width: 120px;">Outcome</th>
                         <th style="width: 150px;">Client IP</th>
                     </tr>
                 </thead>
                 <tbody id="auditTbody">
-                    <tr><td colspan="6" class="empty">Loading…</td></tr>
+                    <tr><td colspan="7" class="empty">Loading…</td></tr>
                 </tbody>
             </table>
         </div>

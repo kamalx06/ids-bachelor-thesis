@@ -3755,3 +3755,113 @@ header h1 {
 .dashboard-page .admin-table th {
     padding: 12px 16px;
 }
+
+.audit-table .audit-cell--details {
+  font-size: 0.8125rem;
+  color: #cbd5e1;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-table .audit-cell--details.audit-cell--muted {
+  color: #64748b;
+}
+
+/* ---------------------------------------------------------------------------
+   Audit filter card
+   --------------------------------------------------------------------------- */
+.audit-filters-card {
+  padding: 18px 20px;
+}
+
+.audit-filters-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.audit-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audit-filter-section-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+/* Time-range row: two datetime inputs at a fixed width, presets fill the
+   remaining space and stay right-aligned on wide screens. */
+.audit-filter-grid--time {
+  grid-template-columns: minmax(220px, 260px) minmax(220px, 260px) 1fr;
+}
+
+.audit-field--presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audit-preset-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.audit-preset-btn {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 9px 14px;
+  min-width: 56px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(30, 41, 59, 0.55);
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.audit-preset-btn:hover {
+  background: rgba(51, 65, 85, 0.7);
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+}
+
+.audit-preset-btn.is-active {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #bfdbfe;
+}
+
+.audit-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.audit-filter-actions .dash-btn {
+  padding: 9px 18px;
+}
+
+/* On narrow viewports, stack the time range vertically. */
+@media (max-width: 720px) {
+  .audit-filter-grid--time {
+    grid-template-columns: 1fr;
+  }
+}

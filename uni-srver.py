@@ -675,6 +675,15 @@ def _safe_next_url(default: str = "/dashboard") -> str:
 @csrf_protect
 def login():
     if request.method == "GET":
+        # An already-authenticated user has no reason to see the login form.
+        # This happens routinely: a stale browser tab from before a page
+        # reload, a bookmark, or a link shared from a session that's still
+        # live. Bounce them to the dashboard, or to whatever `next` target
+        # was requested — so a deep link that was redirected through
+        # /login still lands on the intended page.
+        if current_user.is_authenticated:
+            return redirect(_safe_next_url())
+
         # Surface the `next` parameter to the template so it can be
         # carried through the login form (including the OTP step).
         return render_template(
@@ -1470,6 +1479,7 @@ def update_profile():
             return redirect("/settings")
 
         old_username = user.username
+        old_email = user.email
         old_avatar_path = user.avatar_path
 
         avatar_path = old_avatar_path
@@ -1613,16 +1623,33 @@ def update_profile():
         user.email = email
         user.avatar_path = avatar_path
         s.commit()
-        audit(
-            "profile.update",
-            actor_id=user.id,
-            actor_username=old_username,
-            detail={
-                "username_changed": username != old_username,
-                "email_changed": email != old_username,
-                "avatar_changed": avatar_path != old_avatar_path,
-            },
-        )
+        username_changed = username != old_username
+        email_changed = email != old_email
+        avatar_changed = avatar_path != old_avatar_path
+
+        # Skip the audit row entirely when the user simply re-submitted the
+        # Settings form without changing anything. The password re-auth is
+        # already implied by the fact that we got past ph.verify() above,
+        # and a no-op save is not a security event worth recording.
+        if username_changed or email_changed or avatar_changed:
+            detail = {
+                "username_changed": username_changed,
+                "email_changed": email_changed,
+                "avatar_changed": avatar_changed,
+            }
+            if username_changed:
+                detail["old_username"] = old_username
+                detail["new_username"] = username
+            if email_changed:
+                detail["old_email"] = old_email
+                detail["new_email"] = email
+
+            audit(
+                "profile.update",
+                actor_id=user.id,
+                actor_username=old_username,
+                detail=detail,
+            )
     finally:
         s.close()
 
@@ -1969,9 +1996,26 @@ def audit_page():
 @role_required("admin")
 def audit_api_entries():
     try:
+        # Log once per query — not once per page. before_ts is the cursor
+        # from the previous page; if it's set, this is a pagination click
+        # and not a new read. Skipping it keeps the trail at one row per
+        # visit / filter change instead of one row per "Next" button press.
+        if not request.args.get("before_ts"):
+            audit(
+                "audit.read",
+                detail={
+                    "filters": {
+                        k: request.args.get(k)
+                        for k in ("action", "actor", "actor_ip", "target_type", "outcome")
+                        if request.args.get(k)
+                    },
+                },
+            )
+
         rows = query_audit(
             action=(request.args.get("action") or "").strip() or None,
             actor_username=(request.args.get("actor") or "").strip() or None,
+            actor_ip=(request.args.get("actor_ip") or "").strip() or None,
             target_type=(request.args.get("target_type") or "").strip() or None,
             outcome=(request.args.get("outcome") or "").strip() or None,
             start_time=request.args.get("start_time", type=float),
@@ -2611,9 +2655,48 @@ def ssl_api_ca_info():
 @role_required("admin")
 def ssl_api_ca_download():
     from ssl_inspect import ca as ca_module
+    from storage.db import get_session
+    from storage.models import SslConfig
+
     if not ca_module.ca_exists():
+        # A download attempt against a missing CA is still security-relevant.
+        audit(
+            "ssl.ca.download",
+            outcome="failure",
+            target_type="ca",
+            detail={"reason": "ca_not_present"},
+        )
         abort(404)
+
     pem = ca_module.read_ca_cert_pem()
+
+    # Snapshot the CA identity so the audit row records *which* cert was
+    # handed out, not just how many bytes left the server.
+    ca_detail = {
+        "bytes": len(pem),
+        "sha256": hashlib.sha256(pem).hexdigest(),
+    }
+    session = get_session()
+    try:
+        row = session.get(SslConfig, 1)
+        if row is not None:
+            ca_detail.update({
+                "common_name": row.ca_common_name,
+                "serial_hex": row.ca_serial_hex,
+                "fingerprint_sha256": row.ca_fingerprint_sha256,
+                "valid_from": row.ca_not_before.isoformat() if row.ca_not_before else None,
+                "valid_until": row.ca_not_after.isoformat() if row.ca_not_after else None,
+            })
+    finally:
+        session.close()
+
+    audit(
+        "ssl.ca.download",
+        target_type="ca",
+        target_id=1,                       # SslConfig singleton id
+        detail=ca_detail,
+    )
+
     return Response(
         pem,
         mimetype="application/x-pem-file",
@@ -2634,14 +2717,53 @@ def ssl_api_ca_regenerate():
     to pick up the new cert.
     """
     from ssl_inspect import ca as ca_module
+    from storage.db import get_session
+    from storage.models import SslConfig
+
+    # Snapshot the outgoing CA's identity *before* delete_ca() wipes it, so
+    # the audit row records what was replaced, not just what replaced it.
+    old_detail = {}
+    session = get_session()
+    try:
+        prev = session.get(SslConfig, 1)
+        if prev is not None:
+            old_detail = {
+                "old_common_name": prev.ca_common_name,
+                "old_serial_hex": prev.ca_serial_hex,
+                "old_fingerprint_sha256": prev.ca_fingerprint_sha256,
+                "old_valid_from": prev.ca_not_before.isoformat() if prev.ca_not_before else None,
+                "old_valid_until": prev.ca_not_after.isoformat() if prev.ca_not_after else None,
+            }
+    finally:
+        session.close()
+
     try:
         ca_module.delete_ca()
         cert = ca_module.generate_ca()
+
+        # New CA's identity — mirrored from the download event so the two
+        # rows can be diffed side-by-side without opening the modal.
+        new_detail = {"common_name": cert.subject.rfc4514_string()}
+        session = get_session()
+        try:
+            row = session.get(SslConfig, 1)
+            if row is not None:
+                new_detail.update({
+                    "serial_hex": row.ca_serial_hex,
+                    "fingerprint_sha256": row.ca_fingerprint_sha256,
+                    "valid_from": row.ca_not_before.isoformat() if row.ca_not_before else None,
+                    "valid_until": row.ca_not_after.isoformat() if row.ca_not_after else None,
+                })
+        finally:
+            session.close()
+
         audit(
             "ssl.ca_regenerate",
             target_type="ca",
-            detail={"common_name": cert.subject.rfc4514_string()},
+            target_id=1,
+            detail={**new_detail, **old_detail},
         )
+
         return api_ok({
             "regenerated": True,
             "common_name": cert.subject.rfc4514_string(),

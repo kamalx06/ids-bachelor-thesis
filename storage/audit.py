@@ -109,6 +109,7 @@ def query_audit(
     *,
     action: str | None = None,
     actor_username: str | None = None,
+    actor_ip: str | None = None,
     target_type: str | None = None,
     outcome: str | None = None,
     start_time: float | None = None,
@@ -130,6 +131,8 @@ def query_audit(
             stmt = stmt.where(AuditLog.action == action)
         if actor_username:
             stmt = stmt.where(AuditLog.actor_username == actor_username)
+        if actor_ip:
+            stmt = stmt.where(AuditLog.actor_ip == actor_ip)
         if target_type:
             stmt = stmt.where(AuditLog.target_type == target_type)
         if outcome:
