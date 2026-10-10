@@ -200,6 +200,12 @@ def _rate_limited(e):
             "endpoint": request.endpoint,
         },
     )
+    if _wants_json():
+        return api_error(
+            "Too many requests. Try again in a minute.",
+            status_code=429,
+            code="rate_limited",
+        )
     return e
 
 
@@ -414,13 +420,23 @@ def verify_csrf():
                 "had_candidate": bool(candidate),
             },
         )
+        if _wants_json():
+            # Returning a JSON envelope here is what stops the client from
+            # choking on an HTML body when it calls res.json().
+            return api_error(
+                "Invalid or expired CSRF token. Reload the page and try again.",
+                status_code=400,
+                code="csrf_failed",
+            )
         abort(400, description="Invalid CSRF token")
-
+    return None
 
 def csrf_protect(view_func):
     @wraps(view_func)
     def wrapped_view(*args, **kwargs):
-        verify_csrf()
+        err = verify_csrf()
+        if err is not None:
+            return err
         return view_func(*args, **kwargs)
 
     return wrapped_view
@@ -445,6 +461,43 @@ def api_error(message: str, *, status_code: int = 400, code: str | None = None, 
         ),
         status_code,
     )
+
+
+def _wants_json() -> bool:
+    """
+    True when the caller expects a JSON envelope rather than an HTML page.
+    Used by every error handler so a fetch() never receives an HTML body —
+    an HTML response to res.json() throws `JSON.parse: unexpected character
+    at line 1 column 1`, which is exactly what a login retry after a rate
+    limit or CSRF miss looks like from the browser console.
+    """
+    path = request.path or ""
+
+    if path.startswith(("/ids/", "/admin/api/", "/analytics/", "/audit/", "/ssl/api/")):
+        return True
+
+    # JSON endpoints that don't share the API prefix. Only non-GET requests
+    # are considered — GET /login is the HTML form, POST /login is either
+    # an HTML form submit (Accept: text/html) or, in the future, a fetch.
+    if path in (
+        "/check_totp",
+        "/start_login_email_otp",
+        "/verify_new_totp",
+        "/verify_email_otp",
+        "/start_email_otp",
+        "/start_email_otp_disable",
+        "/disable_email_otp",
+        "/disable_totp",
+        "/change_password",
+        "/update_profile",
+    ):
+        # request.is_json is the strongest signal: the JS explicitly sets
+        # Content-Type: application/json on every fetch() in login.js.
+        if request.is_json:
+            return True
+
+    accept = (request.accept_mimetypes.best or "").lower()
+    return accept == "application/json"
 
 
 def get_db():

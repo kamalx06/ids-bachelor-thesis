@@ -16,6 +16,27 @@ document.addEventListener("DOMContentLoaded", () => {
         return meta ? meta.getAttribute("content") : "";
     }
 
+    /**
+     * Parse a Response body as JSON without throwing on HTML error pages.
+     * A rate-limited or CSRF-rejected request returns an HTML body even
+     * though the caller used fetch(); calling res.json() on that produces
+     * "JSON.parse: unexpected character at line 1 column 1", which tells
+     * the operator nothing. This surfaces the status code instead.
+     */
+    async function readJson(res) {
+        const text = await res.text();
+        try {
+            return JSON.parse(text);
+        } catch {
+            return {
+                success: false,
+                error: { message: `Server returned ${res.status} ${res.statusText || ""}`.trim() },
+                _nonJson: true,
+                _raw: text.slice(0, 200),
+            };
+        }
+    }
+
     function showAlert(msg, type = "error") {
         if (!alertBox) return;
         alertBox.textContent = msg;
@@ -138,7 +159,7 @@ document.addEventListener("DOMContentLoaded", () => {
             },
             body: JSON.stringify({ username, password })
         });
-        const data = await res.json();
+        const data = await readJson(res);
         if (!res.ok || !data.success) {
             const msg = (data && data.error && data.error.message) || "Failed to start email verification.";
             throw new Error(msg);
@@ -194,7 +215,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify({ username, password })
             });
 
-            const data = await res.json();
+            const data = await readJson(res);
             if (!res.ok || !data.success) {
                 const msg = (data && data.error && data.error.message) || "Login failed";
                 throw new Error(msg);
