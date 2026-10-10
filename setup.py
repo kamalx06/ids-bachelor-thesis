@@ -1,14 +1,19 @@
 """
-Installation and distribution for the Enterprise AI IDS platform.
+Custom build commands for the Enterprise AI IDS platform.
 
-After install:
-  ai-ids              — supervisor (Web UI + IDS engine)
-  ai-ids-web          — Flask dashboard only
-  ai-ids-engine       — IDS sensor only
-  ai-ids-bootstrap-db — database schema bootstrap
-  ai-ids-retrain      — model retraining CLI
+All package metadata lives in pyproject.toml. This file exists only because
+`cmdclass` — the mechanism for registering custom `python setup.py ...`
+commands — has no pyproject.toml equivalent. When setuptools finds both
+files, static metadata comes from pyproject.toml and this module is only
+consulted for cmdclass.
 
-  python setup.py bootstrap_db   — same as ai-ids-bootstrap-db (no full install required)
+    python setup.py bootstrap_db
+
+is equivalent to:
+
+    ai-ids-bootstrap-db
+
+and initializes the MySQL/SQLAlchemy/SQLite schemas without a full install.
 """
 
 from __future__ import annotations
@@ -17,65 +22,13 @@ import pathlib
 import sys
 from typing import Sequence
 
-from setuptools import Command, find_packages, setup
+from setuptools import Command, setup
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
-# Application packages (flat layout under project root).
-#
-# Note: the TLS interception package is named `ssl_inspect`, NOT `ssl`.
-# A top-level package named `ssl` would shadow the Python standard library
-# module of the same name and break `requests`, `urllib3`, and mitmproxy
-# on import -- when running from the repo root, sys.path[0] takes priority
-# over the stdlib.
-PACKAGE_NAMES: Sequence[str] = (
-    "ai",
-    "alerts",
-    "api_client",
-    "engine",
-    "ids",
-    "intelligence",
-    "runtime",
-    "ssl_inspect",
-    "storage",
-)
-
-
-def _read_requirements() -> list[str]:
-    req_path = ROOT / "requirements.txt"
-    if not req_path.exists():
-        return []
-    lines: list[str] = []
-    for raw in req_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        lines.append(line)
-    return lines
-
-
-def _read_long_description() -> str:
-    for name in ("README.md", "README.rst"):
-        path = ROOT / name
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-    return (
-        "Enterprise AI IDS — modular intrusion detection with Flask dashboard, "
-        "MySQL persistence, scikit-learn models, and optional NGFW-style TLS "
-        "interception."
-    )
-
-
-def _discover_packages() -> list[str]:
-    found = set(find_packages(where=str(ROOT), exclude=["tests", "tests.*"]))
-    for name in PACKAGE_NAMES:
-        if (ROOT / name).is_dir():
-            found.add(name)
-    return sorted(found)
-
 
 def _bootstrap_database_best_effort() -> int:
-    """Run centralized bootstrap (idempotent)."""
+    """Run the centralized, idempotent database bootstrap."""
     root = str(ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -107,71 +60,6 @@ class BootstrapDatabaseCommand(Command):
 # from install/develop breaks `pip install -e .` when MySQL is not yet
 # configured or unreachable.
 
-
-requirements = _read_requirements()
-packages = _discover_packages()
-
-cmdclass: dict = {
-    "bootstrap_db": BootstrapDatabaseCommand,
-}
-
 setup(
-    name="ai-ids",
-    version="1.0.0",
-    description="Enterprise AI Intrusion Detection System with Web dashboard and ML pipeline",
-    long_description=_read_long_description(),
-    long_description_content_type="text/markdown",
-    author="Kamal Khalilov",
-    license="Proprietary",
-    python_requires=">=3.10,<3.14",
-    packages=packages,
-    package_dir={"": "."},
-    include_package_data=True,
-    py_modules=[
-        "main",
-        "ids_engine",
-        "uni_server",
-        "bootstrap_db",
-        "retrain_model",
-        "merge_cic_ids",
-    ],
-    package_data={
-        "": [
-            "templates/*.html",
-            "static/**/*",
-            "config/*",
-            "env-example",
-        ],
-    },
-    data_files=[],
-    install_requires=requirements,
-    extras_require={
-        "dev": ["pytest"],
-    },
-    entry_points={
-        "console_scripts": [
-            "ai-ids=runtime.entrypoints:run_supervisor",
-            "ai-ids-web=runtime.entrypoints:run_web_server",
-            "ai-ids-engine=runtime.entrypoints:run_ids_engine",
-            "ai-ids-bootstrap-db=runtime.entrypoints:run_bootstrap_db",
-            "ai-ids-retrain=runtime.entrypoints:run_retrain",
-            "ai-ids-ssl-engine=runtime.entrypoints:run_ssl_engine",
-        ],
-    },
-    cmdclass=cmdclass,
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Environment :: Web Environment",
-        "Intended Audience :: Information Technology",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
-        "Programming Language :: Python :: 3.13",
-        "Topic :: Security",
-    ],
-    keywords="ids intrusion-detection flask machine-learning security",
-    project_urls={
-        "Source": "https://github.com/kamalx06/ids-bachelor-thesis",
-    },
+    cmdclass={"bootstrap_db": BootstrapDatabaseCommand},
 )

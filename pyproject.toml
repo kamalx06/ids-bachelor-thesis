@@ -1,0 +1,139 @@
+# =============================================================================
+# Build configuration for the Enterprise AI IDS platform.
+#
+# This file holds all static package metadata. The only thing that stays in
+# setup.py is the custom `bootstrap_db` command, which pyproject.toml cannot
+# express. Everything else (packages, py_modules, package_data, entry points,
+# dependencies) lives here.
+#
+# Install:
+#     pip install .              — non-editable (copies into site-packages)
+#     pip install -e .           — editable (runs from this repo)
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+# -----------------------------------------------------------------------------
+# Project metadata
+# -----------------------------------------------------------------------------
+[project]
+name = "ai-ids"
+version = "1.3.0"
+description = "Enterprise AI Intrusion Detection System with Web dashboard and ML pipeline"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Kamal Khalilov" }]
+keywords = ["ids", "intrusion-detection", "flask", "machine-learning", "security"]
+
+# Dependencies are read from requirements.txt so the two stay in sync.
+dynamic = ["dependencies"]
+
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+
+# -----------------------------------------------------------------------------
+# Optional dependency groups
+# -----------------------------------------------------------------------------
+[project.optional-dependencies]
+dev = ["pytest"]
+
+
+# -----------------------------------------------------------------------------
+# URLs
+# -----------------------------------------------------------------------------
+[project.urls]
+Source = "https://github.com/kamalx06/ids-bachelor-thesis"
+
+
+# -----------------------------------------------------------------------------
+# Console commands
+#
+# `ai-ids` (no suffix) runs the supervisor: it starts the Flask web UI, the
+# IDS engine, and — if SSL_DECRYPTION_ENABLED=true — the TLS interceptor,
+# all as child processes. The per-component commands exist for running one
+# piece in isolation.
+# -----------------------------------------------------------------------------
+[project.scripts]
+ai-ids = "runtime.entrypoints:run_supervisor"
+ai-ids-web = "runtime.entrypoints:run_web_server"
+ai-ids-engine = "runtime.entrypoints:run_ids_engine"
+ai-ids-bootstrap-db = "runtime.entrypoints:run_bootstrap_db"
+ai-ids-retrain = "runtime.entrypoints:run_retrain"
+ai-ids-ssl-engine = "runtime.entrypoints:run_ssl_engine"
+
+
+# -----------------------------------------------------------------------------
+# setuptools-specific configuration
+# -----------------------------------------------------------------------------
+[tool.setuptools]
+include-package-data = true
+
+# Every top-level .py file that is imported by the packages must be listed
+# here. Missing entries cause ModuleNotFoundError at runtime because setuptools
+# does not copy arbitrary repo-root .py files into site-packages — only the
+# ones explicitly named, plus the packages discovered below.
+py-modules = [
+    "main",
+    "ids_engine",
+    "uni_server",
+    "bootstrap_db",
+    "retrain_model",
+    "merge_cic_ids",
+    "logging_config",
+]
+
+# The TLS interception package is named `ssl_inspect`, NOT `ssl`.
+# A top-level package called `ssl` would shadow the Python standard library
+# module of the same name and break `requests`, `urllib3`, and every HTTP
+# client on import — when running from the repo root, sys.path[0] takes
+# priority over the stdlib.
+
+# Package discovery. `find` picks up any directory with an __init__.py that
+# sits directly under the project root. `tests` is excluded because test
+# modules should not be importable at runtime.
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "ai*",
+    "alerts*",
+    "api_client*",
+    "engine*",
+    "ids*",
+    "intelligence*",
+    "runtime*",
+    "ssl_inspect*",
+    "storage*",
+]
+exclude = ["tests", "tests.*"]
+
+# Non-Python files that must be shipped with the package — templates,
+# static assets, config, and the .env template.
+[tool.setuptools.package-data]
+"*" = [
+    "templates/*.html",
+    "static/**/*",
+    "config/*",
+    "env-example",
+]
+
+# Read dependencies from requirements.txt.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

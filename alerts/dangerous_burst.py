@@ -122,7 +122,17 @@ def maybe_alert_dangerous_burst(
     else:
         lines.append("  (no structured threat types; see IDS logs for full context)")
 
-    send_alert(
-        f"[IDS] Burst alert: {src_ip} ({count} high-risk events / {_WINDOW_SEC // 60} min)",
-        "\n".join(lines),
-    )
+    try:
+        send_alert(
+            f"[IDS] Burst alert: {src_ip} ({count} high-risk events / {_WINDOW_SEC // 60} min)",
+            "\n".join(lines),
+        )
+    except Exception:
+        # send_alert is contractually non-raising; this guard exists only
+        # so a future change to that contract cannot crash the packet
+        # analysis worker.
+        from logging_config import get_logger
+        get_logger(__name__).error(
+            "Burst alert delivery raised despite send_alert's contract",
+            exc_info=True,
+        )

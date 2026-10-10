@@ -1,6 +1,6 @@
 """
 Install / remove / inspect the iptables redirect that pushes TCP/443
-through the TLS interceptor. Must be run as root.
+through the TLS interceptor.
 
     sudo python -m ssl_inspect.iptables install
     sudo python -m ssl_inspect.iptables remove
@@ -10,6 +10,16 @@ The install action is idempotent: it checks for the rule first and
 reports "already present" rather than appending a duplicate. --wait is
 passed to every invocation to avoid colliding with concurrent iptables
 operations from a host firewall daemon.
+
+Privileges: the iptables binary refuses to run for non-root callers
+even when the caller holds CAP_NET_ADMIN. Two supported ways to satisfy
+this:
+
+    1. Run the command as root: `sudo python -m ssl_inspect.iptables …`
+    2. Run as an unprivileged user with a passwordless sudoers rule for
+       the specific iptables invocations. See the README section
+       "Running as a non-root user", Option B. When configured, the
+       command runs normally without sudo.
 
 Note that SNI bypass rules (which skip interception for specific
 hostnames) are managed separately by ssl_inspect/bypass.py, not here.
@@ -33,27 +43,58 @@ _RULE = [
 ]
 
 
+def _is_root() -> bool:
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
+def _iptables_cmd(*args: str) -> list[str]:
+    """
+    Build the iptables argv, prefixing with `sudo -n` when not root.
+
+    `-n` tells sudo to fail immediately if a password would be required.
+    Combined with the sudoers rule from the README, this lets the command
+    work either as root or as an unprivileged user without a prompt.
+    """
+    base = ["iptables", "--wait", *args]
+    if _is_root():
+        return base
+    return ["sudo", "-n", *base]
+
+
 def _iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["iptables", "--wait", *args],
+        _iptables_cmd(*args),
         check=False,
         text=True,
         capture_output=True,
     )
 
     if check and result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+
         # iptables exit codes:
         #   1 = parameter problem, 2 = command error, 3 = resource problem,
-        #   4 = permission denied (typically running as non-root)
-        stderr = (result.stderr or "").strip()
-        if "Permission denied" in stderr or "you must be root" in stderr:
+        #   4 = permission denied (running as non-root without a sudoers rule)
+        permission_hint = (
+            "Permission denied" in stderr
+            or "you must be root" in stderr
+            or stderr.startswith("sudo:")
+        )
+
+        if permission_hint:
             print(
-                "[ERROR] iptables needs root privileges. "
-                "Re-run this command with sudo:\n"
-                f"        sudo python3.13 -m ssl_inspect.iptables {' '.join(args[:1])}",
+                "[ERROR] iptables requires elevated privileges.\n"
+                "        Either run this command with sudo:\n"
+                f"          sudo python3.13 -m ssl_inspect.iptables {' '.join(args[:1])}\n"
+                "        Or configure passwordless sudo for iptables — see\n"
+                "          README §Running as a non-root user, Option B",
                 file=sys.stderr,
             )
             raise SystemExit(2)
+
         print(f"[ERROR] iptables failed (exit {result.returncode}): {stderr}", file=sys.stderr)
         raise SystemExit(2)
 
@@ -91,14 +132,47 @@ def status() -> None:
     else:
         print("[INACTIVE] No redirect rule present")
 
-    # Show the full NAT PREROUTING chain so the operator can see where the
-    # redirect sits relative to any SNI bypass RETURN rules.
     result = _iptables("-t", "nat", "-L", "PREROUTING", "-n", "--line-numbers", check=False)
     if result.returncode == 0 and result.stdout.strip():
         print()
         print("Current NAT PREROUTING chain:")
         for line in result.stdout.splitlines():
             print("  " + line)
+
+
+def _check_privileges() -> None:
+    """
+    Preflight probe: can we actually run iptables?
+
+    Root → yes.
+    Non-root → try `sudo -n iptables -L -n` and see if it succeeds
+    without a prompt. If it fails, exit with a clear message.
+    """
+    if _is_root():
+        return
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "iptables", "--wait", "-t", "nat", "-L", "PREROUTING", "-n"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if probe.returncode == 0:
+            return
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    print(
+        "[ERROR] Cannot run iptables from this process.\n"
+        "        Either run this command with sudo:\n"
+        "          sudo python3.13 -m ssl_inspect.iptables <action>\n"
+        "        Or configure passwordless sudo for iptables — see\n"
+        "          README §Running as a non-root user, Option B",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 if __name__ == "__main__":
@@ -112,20 +186,6 @@ if __name__ == "__main__":
     parser.add_argument("action", choices=("install", "remove", "status"))
     args = parser.parse_args()
 
-    # Preflight: iptables needs CAP_NET_ADMIN, so run as root. Checking
-    # here gives a clear error before any partial work is attempted.
-    try:
-        if os.geteuid() != 0:
-            print(
-                "[ERROR] This command must be run as root. "
-                f"Re-run with sudo:\n"
-                f"        sudo python3.13 -m ssl_inspect.iptables {args.action}",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-    except AttributeError:
-        # os.geteuid() is not available on non-POSIX; the platform check
-        # above already excluded non-Linux, so this is unreachable.
-        pass
+    _check_privileges()
 
     {"install": install, "remove": remove, "status": status}[args.action]()

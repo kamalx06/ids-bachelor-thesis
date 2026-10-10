@@ -20,10 +20,19 @@ This module provides:
     above the REDIRECT rule
 
 The synchronization is called:
-  - periodically by ssl_inspect/engine.py (running as root, started by
-    the supervisor) so the firewall stays in sync with the DB
-  - optionally by the web UI on rule change (only effective if the
-    web server happens to run as root, which it does under main.py)
+  - periodically by ssl_inspect/engine.py so the firewall stays in sync
+    with the DB
+  - optionally by the web UI on rule change
+
+Privileges: this module works in three modes.
+
+  1. Running as root — iptables is invoked directly.
+  2. Running as an unprivileged user with a passwordless sudoers rule
+     for the exact iptables invocations listed below. See the README
+     section "Running as a non-root user", Option B.
+  3. Running as an unprivileged user with neither — sync_iptables()
+     and iptables_status() return {"root": False, ...} without
+     touching the firewall, and the interceptor logs the condition.
 
 Neither the SNI matching helpers nor the iptables helpers are used by
 sslsplit directly. sslsplit always terminates; the firewall decides
@@ -56,6 +65,73 @@ _REFRESH_INTERVAL = 30.0
 _lock = threading.Lock()
 _rules: list[dict] = []
 _last_refresh: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Privilege helpers
+# ---------------------------------------------------------------------------
+
+def _is_root() -> bool:
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
+def _iptables_cmd(*args: str) -> list[str]:
+    """
+    Build the iptables argv, prefixing with `sudo -n` when not root.
+
+    `-n` is critical: it tells sudo to fail immediately if a password
+    would be required, rather than hanging on a prompt. In a background
+    thread (the interceptor's sync loop) a hanging prompt would deadlock
+    the whole worker.
+
+    The sudoers rule in the README grants passwordless access to the
+    exact invocations this module makes, so `sudo -n` succeeds on any
+    host that has been set up per Option B.
+    """
+    base = ["iptables", "--wait", *args]
+    if _is_root():
+        return base
+    return ["sudo", "-n", *base]
+
+
+# Cache the probe so the sync loop doesn't fork a `sudo` process every
+# 30 seconds just to check whether we can run iptables.
+_can_run_cache: bool | None = None
+
+
+def _can_run_iptables() -> bool:
+    """
+    Return True if this process can execute iptables commands — either
+    because it is root, or because passwordless sudo is configured for
+    the specific invocations this module makes.
+
+    Probed once per process. The probe is a harmless read
+    (`iptables -t nat -L PREROUTING -n`) that requires no state change.
+    """
+    global _can_run_cache
+    if _can_run_cache is not None:
+        return _can_run_cache
+
+    if _is_root():
+        _can_run_cache = True
+        return True
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "iptables", "--wait", "-t", "nat", "-L", "PREROUTING", "-n"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        _can_run_cache = probe.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        _can_run_cache = False
+
+    return _can_run_cache
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +209,6 @@ def should_bypass_ip(ip: str | None) -> bool:
 # iptables integration
 # ---------------------------------------------------------------------------
 
-# iptables --string shows up in the -S output as:
-#   -m string --string "example.com" --algo bm
 _STRING_RE = re.compile(r'--string\s+"([^"]+)"')
 
 
@@ -155,7 +229,6 @@ def _sni_needles() -> list[str]:
             pattern = (rule["pattern"] or "").strip().lower()
             if not pattern:
                 continue
-            # '*.example.com' → 'example.com'; 'example.com' → 'example.com'
             pattern = pattern.lstrip("*.")
             if pattern:
                 needles.append(pattern)
@@ -164,7 +237,7 @@ def _sni_needles() -> list[str]:
 
 def _iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["iptables", "--wait", *args],
+        _iptables_cmd(*args),
         check=check,
         text=True,
         capture_output=True,
@@ -174,11 +247,13 @@ def _iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 def _installed_needles() -> set[str]:
     """
     Enumerate the SNI bypass rules currently present in the NAT PREROUTING
-    chain. Called without root this returns an empty set (the iptables
-    command fails and we fail closed).
+    chain. Returns an empty set if iptables cannot be queried (no root,
+    no sudoers) — the caller reconciles against an empty set, which
+    means "add everything the DB wants", and the add attempts fail
+    gracefully if we also can't write.
     """
     result = subprocess.run(
-        ["iptables", "--wait", "-t", "nat", "-S", "PREROUTING"],
+        _iptables_cmd("-t", "nat", "-S", "PREROUTING"),
         check=False,
         capture_output=True,
         text=True,
@@ -221,14 +296,6 @@ def _iptables_delete(needle: str) -> None:
     )
 
 
-def _is_root() -> bool:
-    try:
-        return os.geteuid() == 0
-    except AttributeError:
-        # Windows — the interceptor is Linux-only, so this should not happen
-        return False
-
-
 _sync_lock = threading.Lock()
 
 
@@ -241,8 +308,10 @@ def sync_iptables() -> dict:
     Returns a summary dict:
         {"root": bool, "added": int, "removed": int, "unchanged": int}
 
-    Safe to call repeatedly. When not running as root, returns
-    {"root": False, ...} without touching iptables.
+    `root` here means "we were able to run iptables" — either because
+    the process is root or because passwordless sudo is configured.
+    When neither is true, returns {"root": False, ...} without
+    touching iptables.
 
     A module-level lock serializes concurrent callers (the web UI trigger
     and the interceptor's periodic loop). Without it, two callers could
@@ -251,8 +320,11 @@ def sync_iptables() -> dict:
     logic cannot detect because _installed_needles collapses duplicates
     into a set.
     """
-    if not _is_root():
-        logger.debug("sync_iptables: not running as root; skipping")
+    if not _can_run_iptables():
+        logger.debug(
+            "sync_iptables: iptables not available (not root, no sudoers "
+            "rule). See README §Running as a non-root user, Option B."
+        )
         return {"root": False, "added": 0, "removed": 0, "unchanged": 0}
 
     with _sync_lock:
@@ -266,21 +338,17 @@ def sync_iptables() -> dict:
             try:
                 _iptables_add(needle)
                 added += 1
-            except subprocess.CalledProcessError as exc:
-                logger.error(
-                    "iptables add failed for %r: %s", needle,
-                    (exc.stderr or "").strip(),
-                )
+            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                stderr = getattr(exc, "stderr", "") or ""
+                logger.error("iptables add failed for %r: %s", needle, stderr.strip())
 
         for needle in sorted(installed - wanted):
             try:
                 _iptables_delete(needle)
                 removed += 1
-            except subprocess.CalledProcessError as exc:
-                logger.error(
-                    "iptables delete failed for %r: %s", needle,
-                    (exc.stderr or "").strip(),
-                )
+            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                stderr = getattr(exc, "stderr", "") or ""
+                logger.error("iptables delete failed for %r: %s", needle, stderr.strip())
 
         unchanged = len(wanted & installed)
 
@@ -299,7 +367,7 @@ def iptables_status() -> dict:
 
     Returns:
         {
-          "root": bool,             # whether the caller is root
+          "root": bool,             # whether iptables is usable
           "want": [str, ...],       # SNI needles the DB wants installed
           "have": [str, ...],       # SNI needles actually in iptables
           "missing": [str, ...],    # want - have
@@ -308,7 +376,7 @@ def iptables_status() -> dict:
     """
     want = set(_sni_needles())
 
-    if not _is_root():
+    if not _can_run_iptables():
         return {
             "root": False,
             "want": sorted(want),

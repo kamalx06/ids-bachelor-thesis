@@ -9,8 +9,8 @@
 # NEVER commit `.env` with real secrets. This `env-example` file is a template
 # and is safe to commit. Generate secrets with:
 #
-#     python -c "import secrets; print(secrets.token_hex(32))"     # FLASK_SECRET
-#     python -c "import secrets; print(secrets.token_urlsafe(48))" # IDS_SENSOR_TOKEN
+#     python3 -c "import secrets; print(secrets.token_hex(32))"     # FLASK_SECRET
+#     python3 -c "import secrets; print(secrets.token_urlsafe(48))" # IDS_SENSOR_TOKEN
 #
 # Anything in <angle-brackets> is a placeholder that MUST be replaced.
 # Optional features are marked (optional).
@@ -163,7 +163,7 @@ IDS_PORT_SCAN_WINDOW=8
 # ports is never flagged as "unusual_port" — you do not need the IDS to
 # warn you about your own dashboard. Set this to whatever the Web UI and
 # any other local services listen on. Example: IDS_SERVICE_PORTS=5000
-IDS_SERVICE_PORTS=
+IDS_SERVICE_PORTS=5000
 
 # Flood detection: packets from one source within a rolling window.
 IDS_FLOOD_THRESHOLD=120
@@ -208,7 +208,7 @@ API_URL=https://localhost:5000/ids
 # prevented by a nonce + timestamp window.
 #
 # Longer is better: generate with
-#     python -c "import secrets; print(secrets.token_urlsafe(48))"
+#     python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 IDS_SENSOR_TOKEN=<generate-with-secrets.token_urlsafe(48)>
 
 # Verify TLS certificates on the telemetry POST. Set to "false" when the
@@ -236,6 +236,10 @@ IDS_AUTH_NONCE_RETENTION_SEC=300
 # =============================================================================
 # TLS interception (SSL decryption) — optional
 # =============================================================================
+# Enable: SSL_DECRYPTION_ENABLED=true, then follow the "TLS Interception"
+# section in README.md — it walks through sslsplit install, the sudoers
+# rule, the root CA, and the iptables redirect.
+# =============================================================================
 # NGFW-style HTTPS decryption via sslsplit — a system package, not a
 # Python dependency. Install with one of:
 #     sudo dnf install sslsplit -y     # Fedora / RHEL
@@ -258,6 +262,9 @@ SSL_BYPASS_SYNC_SEC=30
 
 # =============================================================================
 # Threat Intelligence
+# =============================================================================
+# Enable: set REPUTATION_KEY (AbuseIPDB) and/or VT_KEY (VirusTotal).
+# Without either, only the local blocklist and ip-api.com are used.
 # =============================================================================
 # AbuseIPDB — https://www.abuseipdb.com/account/api
 REPUTATION_KEY=<abuseipdb-api-key>
@@ -285,10 +292,10 @@ TI_FULL_ENRICH_SCORE=0.45
 # =============================================================================
 # Enable Zeek enrichment by pointing at a Zeek log directory or a specific
 # conn.log. Leave unset to disable the feature entirely.
-#ZEEK_LOG=/opt/zeek/logs/current/conn.log
-#ZEEK_LOG_DIR=/opt/zeek/logs/current
-#ZEEK_NOTICE_LOG=/opt/zeek/logs/current/notice.log
-#ZEEK_WEIRD_LOG=/opt/zeek/logs/current/weird.log
+ZEEK_LOG=/opt/zeek/logs/current/conn.log
+ZEEK_LOG_DIR=/opt/zeek/logs/current
+ZEEK_NOTICE_LOG=/opt/zeek/logs/current/notice.log
+ZEEK_WEIRD_LOG=/opt/zeek/logs/current/weird.log
 
 # Zeek log polling interval (seconds) and per-IP cache TTL.
 ZEEK_UPDATE_INTERVAL_SEC=5
@@ -310,11 +317,11 @@ IDS_BURST_ALERT_DEDUP_SEC=600
 # When running main.py (the supervisor), leave this false — the supervisor
 # starts the sensor itself. Set to true only when running uni-srver.py
 # standalone and you want the Web UI to spawn a sensor subprocess.
-WEBUI_START_IDS_SENSOR=false
+WEBUI_START_IDS_SENSOR=true
 
 # Auto-restart the IDS engine when it exits unexpectedly.
 # Off by default; the dashboard shows OFFLINE until you restart manually.
-IDS_AUTO_RESTART=false
+IDS_AUTO_RESTART=true
 IDS_RESTART_COOLDOWN_SEC=30
 
 # Skip the database bootstrap at startup (already-initialized deployments).
