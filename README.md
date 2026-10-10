@@ -488,12 +488,12 @@ start tagging new events with the new technique.
 
 | Tactic | Techniques |
 |--------|------------|
-| Initial Access | T1190 |
+| Initial Access | T1190, T1566 |
 | Execution | T1059, T1059.007, T1203 |
-| Credential Access | T1552 |
+| Credential Access | T1552, T1552.005 |
 | Discovery | T1046, T1083 |
 | Command and Control | T1071, T1071.004, T1105 |
-| Impact | T1498 |
+| Impact | T1496, T1498, T1499 |
 
 The coverage page groups these by tactic and marks which have fired
 in the observed window. Adding more is a data-entry exercise — the
