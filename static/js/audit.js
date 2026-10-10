@@ -170,6 +170,106 @@ let cursorStack = [null];
 let cursorIndex = 0;
 let lastRows = [];
 
+function buildAuditRow(r) {
+  const tr = document.createElement("tr");
+  tr.className = "audit-row";
+  tr.tabIndex = 0;
+  tr.setAttribute("role", "button");
+
+  const ts = fmtTs(r.ts);
+  const target = r.target_type
+    ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}`
+    : "—";
+  const ip = r.actor_ip || "—";
+
+  const tdTs = document.createElement("td");
+  tdTs.className = "audit-cell audit-cell--mono";
+  tdTs.textContent = ts;
+  tr.appendChild(tdTs);
+
+  const tdActor = document.createElement("td");
+  tdActor.className = "audit-cell";
+  if (r.actor_username) {
+    const strong = document.createElement("strong");
+    strong.className = "audit-actor";
+    strong.textContent = r.actor_username;
+    tdActor.appendChild(strong);
+  } else if (r.actor_id) {
+    const muted = document.createElement("span");
+    muted.className = "audit-actor audit-actor--muted";
+    muted.textContent = `user #${r.actor_id}`;
+    muted.title = "Account no longer in the directory";
+    tdActor.appendChild(muted);
+  } else {
+    const action = String(r.action || "");
+    const preAuth =
+      action.startsWith("auth.") ||
+      action.startsWith("csrf.") ||
+      action.startsWith("rate_limit.") ||
+      action.startsWith("route.") ||
+      action.startsWith("request.");
+    const label = preAuth ? "anonymous" : "system";
+    const muted = document.createElement("span");
+    muted.className = "audit-actor audit-actor--muted";
+    muted.textContent = label;
+    muted.title = preAuth
+      ? "Request was rejected before authentication"
+      : "No interactive user — emitted by a background process";
+    tdActor.appendChild(muted);
+  }
+  tr.appendChild(tdActor);
+
+  const tdAction = document.createElement("td");
+  tdAction.className = "audit-cell";
+  const actionCode = document.createElement("code");
+  actionCode.className = "audit-action";
+  actionCode.textContent = r.action || "—";
+  tdAction.appendChild(actionCode);
+  tr.appendChild(tdAction);
+
+  const tdTarget = document.createElement("td");
+  tdTarget.className = "audit-cell audit-cell--mono";
+  tdTarget.textContent = target;
+  tr.appendChild(tdTarget);
+
+  const tdDetails = document.createElement("td");
+  tdDetails.className = "audit-cell audit-cell--details";
+  const summary = describeEntry(r);
+  if (summary) {
+    tdDetails.textContent = summary;
+    tdDetails.title = summary;
+  } else {
+    tdDetails.textContent = "—";
+    tdDetails.classList.add("audit-cell--muted");
+  }
+  tr.appendChild(tdDetails);
+
+  const tdOutcome = document.createElement("td");
+  tdOutcome.className = "audit-cell";
+  const outcome = String(r.outcome || "success").toLowerCase();
+  const pill = document.createElement("span");
+  pill.className = `audit-outcome audit-outcome--${outcome}`;
+  pill.textContent = outcome;
+  tdOutcome.appendChild(pill);
+  tr.appendChild(tdOutcome);
+
+  const tdIp = document.createElement("td");
+  tdIp.className = "audit-cell audit-cell--mono";
+  tdIp.textContent = ip;
+  tr.appendChild(tdIp);
+
+  const open = () => openDetail(r);
+  tr.addEventListener("click", open);
+  tr.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  });
+
+  return tr;
+}
+
 function renderTable(rows) {
   const tbody = el("auditTbody");
   if (!tbody) return;
@@ -184,119 +284,7 @@ function renderTable(rows) {
     return;
   }
 
-  rows.forEach((r) => {
-    const tr = document.createElement("tr");
-    tr.className = "audit-row";
-    tr.tabIndex = 0;
-    tr.setAttribute("role", "button");
-
-    const ts = fmtTs(r.ts);
-    const target = r.target_type
-      ? `${r.target_type}${r.target_id ? " #" + r.target_id : ""}`
-      : "—";
-    const ip = r.actor_ip || "—";
-
-    // Timestamp
-    const tdTs = document.createElement("td");
-    tdTs.className = "audit-cell audit-cell--mono";
-    tdTs.textContent = ts;
-    tr.appendChild(tdTs);
-
-    // Actor — four cases:
-    //   1. actor_username present → the real identity
-    //   2. actor_id but no username → user record exists but was deleted
-    //      or the row predates the username column being populated
-    //   3. no actor at all, action starts with "auth."/"csrf."/"rate_limit."/
-    //      "route." → rejected before authentication; label as "anonymous"
-    //   4. no actor, everything else → "system" (sensor, worker, timer)
-    const tdActor = document.createElement("td");
-    tdActor.className = "audit-cell";
-    if (r.actor_username) {
-      const strong = document.createElement("strong");
-      strong.className = "audit-actor";
-      strong.textContent = r.actor_username;
-      tdActor.appendChild(strong);
-    } else if (r.actor_id) {
-      const muted = document.createElement("span");
-      muted.className = "audit-actor audit-actor--muted";
-      muted.textContent = `user #${r.actor_id}`;
-      muted.title = "Account no longer in the directory";
-      tdActor.appendChild(muted);
-    } else {
-      const action = String(r.action || "");
-      const preAuth =
-        action.startsWith("auth.") ||
-        action.startsWith("csrf.") ||
-        action.startsWith("rate_limit.") ||
-        action.startsWith("route.") ||
-        action.startsWith("request.");
-      const label = preAuth ? "anonymous" : "system";
-      const muted = document.createElement("span");
-      muted.className = "audit-actor audit-actor--muted";
-      muted.textContent = label;
-      muted.title = preAuth
-        ? "Request was rejected before authentication"
-        : "No interactive user — emitted by a background process";
-      tdActor.appendChild(muted);
-    }
-    tr.appendChild(tdActor);
-
-    // Action
-    const tdAction = document.createElement("td");
-    tdAction.className = "audit-cell";
-    const actionCode = document.createElement("code");
-    actionCode.className = "audit-action";
-    actionCode.textContent = r.action || "—";
-    tdAction.appendChild(actionCode);
-    tr.appendChild(tdAction);
-
-    // Target
-    const tdTarget = document.createElement("td");
-    tdTarget.className = "audit-cell audit-cell--mono";
-    tdTarget.textContent = target;
-    tr.appendChild(tdTarget);
-
-    // Details — short human-readable summary derived from the JSON blob.
-    // The modal still shows the full JSON for anything not covered here.
-    const tdDetails = document.createElement("td");
-    tdDetails.className = "audit-cell audit-cell--details";
-    const summary = describeEntry(r);
-    if (summary) {
-      tdDetails.textContent = summary;
-      tdDetails.title = summary;
-    } else {
-      tdDetails.textContent = "—";
-      tdDetails.classList.add("audit-cell--muted");
-    }
-    tr.appendChild(tdDetails);
-
-    // Outcome — colored pill via CSS classes
-    const tdOutcome = document.createElement("td");
-    tdOutcome.className = "audit-cell";
-    const outcome = String(r.outcome || "success").toLowerCase();
-    const pill = document.createElement("span");
-    pill.className = `audit-outcome audit-outcome--${outcome}`;
-    pill.textContent = outcome;
-    tdOutcome.appendChild(pill);
-    tr.appendChild(tdOutcome);
-
-    // Client IP
-    const tdIp = document.createElement("td");
-    tdIp.className = "audit-cell audit-cell--mono";
-    tdIp.textContent = ip;
-    tr.appendChild(tdIp);
-
-    const open = () => openDetail(r);
-    tr.addEventListener("click", open);
-    tr.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        open();
-      }
-    });
-
-    tbody.appendChild(tr);
-  });
+  rows.forEach((r) => tbody.appendChild(buildAuditRow(r)));
 }
 
 function renderPager(meta) {
@@ -415,6 +403,91 @@ function openDetail(entry) {
   modal.classList.add("open");
 }
 
+// --- Live audit feed (SSE) ------------------------------------------------
+//
+// Reuses the same sse_stream() the dashboard uses. Prepends rows when the
+// analyst is looking at page 1 and the incoming row matches the current
+// filter set — otherwise the row would appear on a page it doesn't belong to.
+let liveSource = null;
+let liveCount = 0;
+
+function rowMatchesCurrentFilters(r) {
+  const action = el("auditFilterAction")?.value || "";
+  if (action && r.action !== action) return false;
+
+  const actor = (el("auditFilterActor")?.value || "").trim().toLowerCase();
+  if (actor && !String(r.actor_username || "").toLowerCase().includes(actor)) return false;
+
+  const actorIp = (el("auditFilterIp")?.value || "").trim();
+  if (actorIp && String(r.actor_ip || "") !== actorIp) return false;
+
+  const targetType = el("auditFilterTargetType")?.value || "";
+  if (targetType && r.target_type !== targetType) return false;
+
+  const outcome = el("auditFilterOutcome")?.value || "";
+  if (outcome && String(r.outcome || "").toLowerCase() !== outcome.toLowerCase()) return false;
+
+  const startV = el("auditFilterStart")?.value;
+  if (startV) {
+    const s = new Date(startV).getTime();
+    if (Number.isFinite(s) && r.ts < s / 1000) return false;
+  }
+  const endV = el("auditFilterEnd")?.value;
+  if (endV) {
+    const e = new Date(endV).getTime();
+    if (Number.isFinite(e) && r.ts > e / 1000) return false;
+  }
+  return true;
+}
+
+function prependLiveRow(r) {
+  if (cursorIndex !== 0) return;                    // don't mutate older pages
+  if (lastRows.some((x) => x.id === r.id)) return;  // dedupe on reconnect
+  if (!rowMatchesCurrentFilters(r)) return;
+
+  const tbody = el("auditTbody");
+  if (!tbody) return;
+
+  const empty = tbody.querySelector("td.empty");
+  if (empty) empty.parentElement.remove();
+
+  tbody.insertBefore(buildAuditRow(r), tbody.firstChild);
+  lastRows = [r, ...lastRows];
+  liveCount += 1;
+
+  const box = el("auditAlert");
+  if (box) {
+    box.textContent = `Showing ${lastRows.length} entries · +${liveCount} live`;
+    box.className = "alert info";
+  }
+}
+
+function startLiveFeed() {
+  if (liveSource) return;
+  if (typeof EventSource === "undefined") return;   // unsupported browser
+
+  try {
+    liveSource = new EventSource("/audit/stream");
+  } catch (e) {
+    return;
+  }
+
+  const onAudit = (ev) => {
+    try {
+      const row = JSON.parse(ev.data);
+      if (row && row.action) prependLiveRow(row);
+    } catch (_) { /* ignore malformed frames */ }
+  };
+
+  // The server sets the SSE event field to the channel name
+  // (`event: audit`), so this is the only listener that fires.
+  liveSource.addEventListener("audit", onAudit);
+
+  liveSource.addEventListener("error", () => {
+    // EventSource auto-reconnects; nothing to do here except stay quiet.
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const modal = el("auditDetailModal");
   const closeBtn = el("closeAuditDetail");
@@ -428,6 +501,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   el("auditApplyBtn")?.addEventListener("click", () => {
     cursorStack = [null];
     cursorIndex = 0;
+    liveCount = 0;
     loadEntries();
   });
   el("auditResetBtn")?.addEventListener("click", () => {
@@ -440,6 +514,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       .forEach((btn) => btn.classList.remove("is-active"));
     cursorStack = [null];
     cursorIndex = 0;
+    liveCount = 0;
     loadEntries();
   });
 
@@ -466,6 +541,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       cursorStack = [null];
       cursorIndex = 0;
+      liveCount = 0;
       loadEntries();
     });
   });
@@ -475,4 +551,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch (e) {
     showAlert(e.message || "Failed to load audit page.", "error");
   }
-});
+
+  startLiveFeed();
+}); 

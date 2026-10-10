@@ -2054,6 +2054,17 @@ def audit_api_stats():
     except Exception as e:
         return api_error(str(e), status_code=500, code="internal_error")
 
+@app.route("/audit/stream")
+@login_required
+@role_required("admin")
+def audit_stream():
+    """
+    SSE stream of new audit rows. Same transport as /ids/stream — the
+    client listens for the `audit` event type and ignores the rest.
+    """
+    return Response(sse_stream(), mimetype="text/event-stream")
+
+
 @app.route("/admin")
 @login_required
 @role_required("admin")

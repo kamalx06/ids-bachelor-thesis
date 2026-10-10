@@ -74,7 +74,7 @@ def audit(
         cur_id, cur_name, cur_ip = _current_actor()
         session = get_session()
         try:
-            session.add(AuditLog(
+            row = AuditLog(
                 ts=datetime.now(timezone.utc).replace(tzinfo=None),
                 actor_id=actor_id if actor_id is not None else cur_id,
                 actor_username=actor_username if actor_username is not None else cur_name,
@@ -84,8 +84,27 @@ def audit(
                 target_id=str(target_id) if target_id is not None else None,
                 outcome=outcome,
                 detail_json=_safe_json(detail),
-            ))
+            )
+            session.add(row)
             session.commit()
+
+            try:
+                from ids.websocket_updates import broadcast
+                broadcast("audit", {
+                    "id": row.id,
+                    "ts": row.ts.replace(tzinfo=timezone.utc).timestamp()
+                        if row.ts.tzinfo is None else row.ts.timestamp(),
+                    "actor_id": row.actor_id,
+                    "actor_username": row.actor_username,
+                    "actor_ip": row.actor_ip,
+                    "action": row.action,
+                    "target_type": row.target_type,
+                    "target_id": row.target_id,
+                    "outcome": row.outcome,
+                    "detail": detail or {},
+                })
+            except Exception:
+                logger.debug("Audit broadcast failed", exc_info=True)
         finally:
             session.close()
     except Exception:
