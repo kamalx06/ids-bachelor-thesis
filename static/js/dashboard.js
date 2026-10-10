@@ -876,7 +876,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const FILTER_FIELD_IDS = [
     "qIp", "qSrcIp", "qDstIp", "qPort", "qSrcPort", "qDstPort", "qProtocol",
-    "qUrl", "qReason", "qClassification", "qAiLabel", "qMinScore", "qMaxScore",
+    "qMinBytes", "qMaxBytes", "qMinPackets", "qMinDuration",
+    "qUrl", "qReason", "qMitre",
+    "qClassification", "qAiLabel",
+    "qMinRisk", "qMaxRisk",
+    "qMinScore", "qMaxScore",
     "qMinAnomaly", "qMinConfidence", "qThreatIntel", "qStart", "qEnd",
   ];
 
@@ -912,10 +916,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       src_port: el("qSrcPort")?.value || "",
       dst_port: el("qDstPort")?.value || "",
       protocol: el("qProtocol")?.value || "",
+      min_bytes: el("qMinBytes")?.value || "",
+      max_bytes: el("qMaxBytes")?.value || "",
+      min_packets: el("qMinPackets")?.value || "",
+      min_duration: el("qMinDuration")?.value || "",
       url: el("qUrl")?.value?.trim() || "",
       reason: el("qReason")?.value?.trim() || "",
+      mitre_technique: el("qMitre")?.value?.trim() || "",
       classification: el("qClassification")?.value || "",
       ai_label: el("qAiLabel")?.value || "",
+      min_risk_score: el("qMinRisk")?.value || "",
+      max_risk_score: el("qMaxRisk")?.value || "",
       min_ai_score: el("qMinScore")?.value || "",
       max_ai_score: el("qMaxScore")?.value || "",
       min_anomaly_score: el("qMinAnomaly")?.value || "",

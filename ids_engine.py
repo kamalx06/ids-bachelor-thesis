@@ -198,6 +198,12 @@ def _preprocess_loop(worker_id: str) -> None:
                 continue
             if not _queues.enqueue_packet(item):
                 logger.debug("Packet dropped after preprocess enqueue")
+        except Exception:
+            # A single malformed/unexpected packet must not kill the
+            # preprocess thread -- that silently degrades throughput until
+            # every worker is dead. Log and continue.
+            metrics.inc("ids_preprocess_errors_total") if hasattr(metrics, "inc") else None
+            logger.error("Preprocess failed for a packet; continuing", exc_info=True)
         finally:
             _queues.raw_queue.task_done()
 
@@ -211,6 +217,8 @@ def _worker_loop(worker_id: str, cancel: threading.Event) -> None:
             continue
         try:
             _queues.process_with_retry(_process_packet, packet_dict)
+        except Exception:
+            logger.error("Analysis failed for a packet; continuing", exc_info=True)
         finally:
             _queues.packet_queue.task_done()
 

@@ -208,6 +208,40 @@ def _internal_error(e):
     return e
 
 
+# Paths that every browser or crawler hits automatically. Auditing these
+# would flood the audit log with noise that carries no signal — a missing
+# favicon is not a security event.
+_NOT_FOUND_NOISE = frozenset({
+    "/favicon.ico",
+    "/robots.txt",
+    "/.well-known/security.txt",
+})
+
+
+@app.errorhandler(404)
+def _not_found(e):
+    # Any request whose path doesn't match a route — typos, dead links,
+    # scanner probes. Audited so reconnaissance against the web UI shows
+    # up in the trail, minus the automatic browser noise.
+    if request.path not in _NOT_FOUND_NOISE:
+        audit(
+            "route.not_found",
+            outcome="failure",
+            detail={
+                "path": request.path,
+                "method": request.method,
+            },
+        )
+
+    # API-style prefixes get a JSON envelope (same shape as every other
+    # API error) so the JS clients and Prometheus scrapers can parse it.
+    if request.path.startswith(("/ids/", "/admin/api/", "/analytics/", "/audit/", "/ssl/api/")):
+        return api_error("Not found", status_code=404, code="not_found")
+
+    # Everything else gets the styled 404 page.
+    return render_template("404.html"), 404
+
+
 ph = PasswordHasher(
     time_cost=3,
     memory_cost=65536,
@@ -2998,16 +3032,23 @@ def search_logs_api():
     classification = request.args.get("classification") or request.args.get("status")
     ai_label = request.args.get("ai_label")
     reason = request.args.get("reason")
+    mitre_technique = (request.args.get("mitre_technique") or "").strip() or None
     has_threat_intel = request.args.get("has_threat_intel")
     limit = max(1, min(int(request.args.get("limit", 200)), 1000))
     start_time = request.args.get("start_time", type=float)
     end_time = request.args.get("end_time", type=float)
     min_ai_score = request.args.get("min_ai_score", type=float)
     max_ai_score = request.args.get("max_ai_score", type=float)
+    min_risk_score = request.args.get("min_risk_score", type=float)
+    max_risk_score = request.args.get("max_risk_score", type=float)
     min_anomaly_score = request.args.get("min_anomaly_score", type=float)
     max_anomaly_score = request.args.get("max_anomaly_score", type=float)
     min_confidence = request.args.get("min_confidence", type=float)
     max_confidence = request.args.get("max_confidence", type=float)
+    min_bytes = request.args.get("min_bytes", type=int)
+    max_bytes = request.args.get("max_bytes", type=int)
+    min_packets = request.args.get("min_packets", type=int)
+    min_duration = request.args.get("min_duration", type=float)
     before_time = request.args.get("before_time", type=float)
 
     results = query_logs(
@@ -3022,15 +3063,22 @@ def search_logs_api():
         classification=classification,
         ai_label=ai_label,
         reason=reason,
+        mitre_technique=mitre_technique,
         has_threat_intel=has_threat_intel,
         start_time=start_time,
         end_time=end_time,
         min_ai_score=min_ai_score,
         max_ai_score=max_ai_score,
+        min_risk_score=min_risk_score,
+        max_risk_score=max_risk_score,
         min_anomaly_score=min_anomaly_score,
         max_anomaly_score=max_anomaly_score,
         min_confidence=min_confidence,
         max_confidence=max_confidence,
+        min_bytes=min_bytes,
+        max_bytes=max_bytes,
+        min_packets=min_packets,
+        min_duration=min_duration,
         before_time=before_time,
         limit=limit,
     )

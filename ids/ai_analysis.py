@@ -139,7 +139,13 @@ def _heuristic_signals(data: dict) -> tuple[float, list[str]]:
 
     meta = data.get("meta") or {}
     entropy = float(meta.get("payload_entropy") or 0.0)
-    if entropy > 7.2:
+    # TLS traffic is encrypted by design — its payload will always look
+    # random, so high entropy carries no signal there. Recognise TLS on
+    # any port (is_tls is set by feature_extractor from the first bytes
+    # of the record), plus the historical is_https flag for connections
+    # to port 443 whose first packets are SYN-only (no payload yet).
+    is_encrypted = bool(data.get("is_tls") or data.get("is_https"))
+    if entropy > 7.2 and not is_encrypted:
         boost += min(0.10, (entropy - 7.0) * 0.06)
         reasons.append("high_payload_entropy")
 

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found — AI IDS</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="dashboard-page">
+<div class="dash-bg" aria-hidden="true"></div>
+
+<header class="dash-header">
+    <div class="dash-brand">
+        <span class="dash-logo" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+        </span>
+        <div>
+            <h1>Page not found</h1>
+            <p class="dash-tagline">The resource you requested does not exist</p>
+        </div>
+    </div>
+    <nav class="dash-nav" aria-label="Main">
+        {% if current_user.is_authenticated %}
+        <a href="/dashboard" class="dash-nav-link">Monitoring</a>
+        <a href="/analytics" class="dash-nav-link">Analytics</a>
+        {% if (current_user.role or "")|lower == "admin" %}
+        <a href="/admin" class="dash-nav-link">Admin</a>
+        <a href="/ssl" class="dash-nav-link">SSL</a>
+        <a href="/audit" class="dash-nav-link">Audit</a>
+        {% endif %}
+        <a href="/settings" class="dash-nav-link">Settings</a>
+        <a href="/logout" class="dash-nav-link dash-nav-link--muted">Logout</a>
+        {% else %}
+        <a href="/login" class="dash-nav-link">Login</a>
+        {% endif %}
+    </nav>
+</header>
+
+<main class="dash-main container">
+    <section class="card dash-logs-panel" style="max-width: 720px; margin: 40px auto;">
+        <div class="dash-section-head" style="text-align: center;">
+            <h2 style="font-size: 3.5rem; margin: 0; letter-spacing: -0.04em;">404</h2>
+            <p class="dash-section-desc" style="margin-top: 12px;">
+                The page
+                <code style="font-family: 'JetBrains Mono', monospace;">{{ request.path }}</code>
+                does not exist on this server.
+            </p>
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: center; margin-top: 24px;">
+            {% if current_user.is_authenticated %}
+            <a class="primary dash-btn" href="/dashboard">Back to dashboard</a>
+            {% else %}
+            <a class="primary dash-btn" href="/login">Go to login</a>
+            {% endif %}
+        </div>
+    </section>
+</main>
+</body>
+</html>

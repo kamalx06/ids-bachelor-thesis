@@ -87,8 +87,9 @@ def _apply_filters(stmt, model, **filters):
         stmt = stmt.where(model.ai_label == filters["ai_label"])
     if filters.get("reason"):
         stmt = stmt.where(model.reasons_json.like(f"%{filters['reason']}%"))
-    if filters.get("has_threat_intel"):
-        want_ti = str(filters["has_threat_intel"]).lower() in ("1", "true", "yes")
+    if filters.get("has_threat_intel") not in (None, ""):
+        raw = str(filters["has_threat_intel"]).lower()
+        want_ti = raw in ("1", "true", "yes")
         ti_present = or_(
             and_(model.ti_ip_json.isnot(None), model.ti_ip_json != ""),
             and_(model.ti_url_json.isnot(None), model.ti_url_json != ""),
@@ -107,6 +108,15 @@ def _apply_filters(stmt, model, **filters):
             stmt = stmt.where(model.ai_score >= min_score)
     if filters.get("max_ai_score") is not None:
         stmt = stmt.where(model.ai_score <= float(filters["max_ai_score"]))
+    if filters.get("min_risk_score") is not None:
+        min_risk = float(filters["min_risk_score"])
+        # Same NULL-tolerance as min_ai_score: NULL risk_score is
+        # "not fused yet", which should only be excluded when the caller
+        # is explicitly asking for positive-risk rows.
+        if min_risk > 0:
+            stmt = stmt.where(model.risk_score >= min_risk)
+    if filters.get("max_risk_score") is not None:
+        stmt = stmt.where(model.risk_score <= float(filters["max_risk_score"]))
     if filters.get("min_anomaly_score") is not None:
         stmt = stmt.where(model.anomaly_score >= float(filters["min_anomaly_score"]))
     if filters.get("max_anomaly_score") is not None:
@@ -115,6 +125,25 @@ def _apply_filters(stmt, model, **filters):
         stmt = stmt.where(model.confidence >= float(filters["min_confidence"]))
     if filters.get("max_confidence") is not None:
         stmt = stmt.where(model.confidence <= float(filters["max_confidence"]))
+
+    if filters.get("min_bytes") is not None:
+        stmt = stmt.where(model.bytes >= int(filters["min_bytes"]))
+    if filters.get("max_bytes") is not None:
+        stmt = stmt.where(model.bytes <= int(filters["max_bytes"]))
+    if filters.get("min_packets") is not None:
+        stmt = stmt.where(model.packets >= int(filters["min_packets"]))
+    if filters.get("min_duration") is not None:
+        stmt = stmt.where(model.duration >= float(filters["min_duration"]))
+
+    if filters.get("mitre_technique"):
+        # mitre_json is a serialised JSON array like
+        #   [{"technique": "T1046", "tactic": "Discovery", "name": "..."}]
+        # A LIKE against the exact quoted value is enough at the row volumes
+        # this table sees, and works on MySQL 8 without the JSON functions.
+        # Anchoring on the closing quote prevents T104 from matching T1046.
+        needle = f'%"technique": "{filters["mitre_technique"]}"%'
+        stmt = stmt.where(model.mitre_json.like(needle))
+
     return stmt
 
 
@@ -131,15 +160,22 @@ def query_logs(
     classification: str | None = None,
     ai_label: str | None = None,
     reason: str | None = None,
+    mitre_technique: str | None = None,
     has_threat_intel: str | None = None,
     start_time: float | None = None,
     end_time: float | None = None,
     min_ai_score: float | None = None,
     max_ai_score: float | None = None,
+    min_risk_score: float | None = None,
+    max_risk_score: float | None = None,
     min_anomaly_score: float | None = None,
     max_anomaly_score: float | None = None,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    min_bytes: int | None = None,
+    max_bytes: int | None = None,
+    min_packets: int | None = None,
+    min_duration: float | None = None,
     before_time: float | None = None,
     limit: int = 200,
 ) -> list[dict]:
@@ -156,15 +192,22 @@ def query_logs(
         classification=classification,
         ai_label=ai_label,
         reason=reason,
+        mitre_technique=mitre_technique,
         has_threat_intel=has_threat_intel,
         start_time=start_time,
         end_time=end_time,
         min_ai_score=min_ai_score,
         max_ai_score=max_ai_score,
+        min_risk_score=min_risk_score,
+        max_risk_score=max_risk_score,
         min_anomaly_score=min_anomaly_score,
         max_anomaly_score=max_anomaly_score,
         min_confidence=min_confidence,
         max_confidence=max_confidence,
+        min_bytes=min_bytes,
+        max_bytes=max_bytes,
+        min_packets=min_packets,
+        min_duration=min_duration,
         before_time=before_time,
     )
     safe_limit = max(1, min(int(limit), 2000))

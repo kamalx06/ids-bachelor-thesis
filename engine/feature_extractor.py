@@ -1,12 +1,22 @@
 import math
+import os
 from collections import Counter
 
-from scapy.all import IP, TCP, UDP
+from scapy.all import ICMP, IP, Raw, TCP, UDP
 
 from ids.event_timestamp import scapy_packet_epoch_seconds
 
 from ai.cic_features import vector_from_flow_snapshot
 from .flow_manager import update_flow
+
+# Extra ports that should never be flagged as "unusual" even though they
+# are above 1024 and not in _COMMON_PORTS. Set IDS_SERVICE_PORTS in .env,
+# e.g. IDS_SERVICE_PORTS=5000,8443,9000
+_EXTRA_SERVICE_PORTS: set[int] = set()
+for _p in (os.getenv("IDS_SERVICE_PORTS", "") or "").split(","):
+    _p = _p.strip()
+    if _p.isdigit():
+        _EXTRA_SERVICE_PORTS.add(int(_p))
 
 # Well-known ports — traffic outside these on client-initiated flows is slightly riskier
 _COMMON_PORTS = {
@@ -30,8 +40,6 @@ def _protocol_name(proto: int) -> str:
 
 def _payload_entropy(pkt) -> float:
     try:
-        from scapy.all import Raw
-
         if not pkt.haslayer(Raw):
             return 0.0
         data = bytes(pkt[Raw].load)
@@ -91,7 +99,12 @@ def extract(pkt):
     protocol_name = _protocol_name(proto)
     unusual_port = None
     port_category = _classify_port(dport)
-    if dport and port_category == "unknown" and dport > 1024:
+    if (
+        dport
+        and port_category == "unknown"
+        and dport > 1024
+        and dport not in _EXTRA_SERVICE_PORTS
+    ):
         unusual_port = dport
 
     data = {
@@ -116,7 +129,20 @@ def extract(pkt):
     if wire_ts is not None:
         data["packet_send_time"] = wire_ts
 
-    if proto == 1 and dport == 443:
-        data["is_https"] = True
+    if proto == 1:
+        # TLS on any port, not just 443. A TLS record starts with
+        # 0x16 (handshake) or 0x17 (application data) followed by 0x03
+        # as the major version byte. Match on content so that HTTPS on a
+        # non-standard port (e.g. the dashboard on 5000) is still recognized
+        # as encrypted and does not trigger high_payload_entropy.
+        try:
+            if pkt.haslayer(Raw):
+                raw = bytes(pkt[Raw].load)[:3]
+                if len(raw) >= 2 and raw[0] in (0x14, 0x15, 0x16, 0x17) and raw[1] == 0x03:
+                    data["is_tls"] = True
+        except Exception:
+            pass
+        if dport == 443:
+            data["is_https"] = True
 
     return data
