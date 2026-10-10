@@ -124,6 +124,253 @@
 
     <section class="card dash-logs-panel" style="margin-bottom: 24px;">
         <div class="dash-section-head">
+            <h2>Put the IDS in the traffic path</h2>
+            <p class="dash-section-desc">
+                Installing the root CA on a client does <strong>not</strong> route its
+                traffic through this machine. It only makes the client <em>trust</em> the
+                certificates this IDS forges, once traffic is already flowing through it.
+                Before expecting to see decrypted flows in <code>/dashboard</code>, the
+                client's traffic must actually pass through this host. Pick the topology
+                that matches your network.
+            </p>
+        </div>
+
+        <div class="alert info" style="margin: 0 0 20px;">
+            <strong>The client never needs to know this host's IP or port.</strong>
+            From the client's perspective it makes an ordinary HTTPS connection to
+            <code>example.com:443</code>. The interception is transparent — the network
+            layer rewrites the destination before the packet leaves the client's subnet.
+            No proxy settings, no PAC file, no client-side configuration beyond the CA
+            trust step below.
+            <br><br>
+            <em>About the port:</em> the client always uses <strong>443</strong>. The
+            interceptor listens on <code>SSL_INTERCEPT_PORT</code> (default
+            <strong>8443</strong>) and the kernel rewrites the destination port from 443
+            to 8443 on the IDS host before the packet is ever seen by sslsplit. The
+            client has no way to observe this rewrite, and no way to opt out of it — it
+            happens below the transport layer. The only exception is <strong>Option
+            3</strong> below, where the router performs the same rewrite and therefore
+            needs the port written into its own DNAT rule.
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Option 1 — Default gateway (simplest)</h3>
+            <p class="small" style="margin: 0 0 8px;">
+                Point the client's default route at this host. All traffic flows
+                through the IDS, which NATs it to the real internet and intercepts
+                TCP/443 along the way. Works well for a single test client or a
+                segment where every device can use the IDS as its gateway.
+            </p>
+
+            <h4 style="margin: 14px 0 6px; font-size: 0.9rem;">Step A — On the IDS host (Linux)</h4>
+            <pre># 1. Enable IP forwarding
+sudo sysctl -w net.ipv4.ip_forward=1
+# Persist across reboots:
+echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-ids-forward.conf
+
+# 2. NAT outbound traffic on the uplink interface.
+#    Replace &lt;UPLINK&gt; with your real interface (eth0, ens18, enp1s0, ...).
+sudo iptables -t nat -A POSTROUTING -o &lt;UPLINK&gt; -j MASQUERADE
+
+# 3. Redirect inbound 443 into the interceptor.
+sudo python -m ssl_inspect.iptables install</pre>
+
+            <h4 style="margin: 14px 0 6px; font-size: 0.9rem;">Step B — On the client</h4>
+            <p class="small" style="margin: 0 0 8px;">
+                Choose the section that matches the client operating system. In all
+                three the goal is the same: change the default gateway so it points
+                at the IDS host's IP on the client's own subnet.
+            </p>
+
+            <h4 style="margin: 12px 0 6px; font-size: 0.85rem;">Linux client</h4>
+            <pre># Change the default route.
+# Replace &lt;IDS_IP&gt; with the IDS address on this client's subnet.
+sudo ip route replace default via &lt;IDS_IP&gt;
+
+# Verify.
+ip route show default
+# Should print: default via &lt;IDS_IP&gt; dev ...</pre>
+
+            <h4 style="margin: 12px 0 6px; font-size: 0.85rem;">Windows client (10 / 11 / Server)</h4>
+            <pre>:: Open cmd.exe as Administrator.
+
+:: 1. Add a persistent default route via the IDS with a low metric,
+::    so it wins over any DHCP-supplied default route.
+::    Replace &lt;IDS_IP&gt; with the IDS address on this client's subnet.
+route -p add 0.0.0.0 mask 0.0.0.0 &lt;IDS_IP&gt; metric 1
+
+:: 2. Verify (the new 0.0.0.0 entry should appear near the top).
+route print -4
+
+:: To undo later:
+route delete 0.0.0.0</pre>
+            <p class="small" style="margin: 6px 0 0;">
+                GUI alternative: <strong>Control Panel → Network and Internet →
+                Network Connections</strong>, right-click the active adapter →
+                <strong>Properties</strong> → select <strong>Internet Protocol
+                Version 4 (TCP/IPv4)</strong> → <strong>Properties</strong> → under
+                <em>Use the following IP address</em>, set the
+                <em>Default gateway</em> to the IDS IP.
+            </p>
+
+            <h4 style="margin: 12px 0 6px; font-size: 0.85rem;">macOS client</h4>
+            <pre># Change the default route immediately.
+# Replace &lt;IDS_IP&gt; with the IDS address on this client's subnet.
+sudo route change default &lt;IDS_IP&gt;
+
+# To make it persistent across reboots, update the network service.
+# First list the services to find the one in use (usually "Wi-Fi" or "Ethernet"):
+networksetup -listallnetworkservices
+
+# Then set the router (default gateway) on that service:
+sudo networksetup -setrouter "Wi-Fi" &lt;IDS_IP&gt;
+
+# Verify.
+netstat -rn | grep default</pre>
+
+            <p class="small" style="margin: 8px 0 0;">
+                <strong>Why the MASQUERADE rule matters:</strong> without it, forwarded
+                packets arrive at the IDS with the client's source IP and are dropped
+                because the IDS does not route client addresses back to the internet.
+                MASQUERADE rewrites the source to the IDS host's address on the way out,
+                so the client's traffic reaches the real servers.
+            </p>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Option 2 — Transparent bridge (inline, no client reconfiguration)</h3>
+            <p class="small" style="margin: 0 0 8px;">
+                Give this host two network interfaces and bridge them. Traffic
+                physically traverses the IDS without any changes on the client.
+                Common for dedicated appliances and for VMs with two virtual NICs.
+                Requires <code>bridge-utils</code> and <code>ebtables</code>.
+            </p>
+            <pre># On the IDS host — bind two NICs into a bridge
+sudo ip link add name br0 type bridge
+sudo ip link set br0 up
+sudo ip link set &lt;NIC_IN&gt; master br0
+sudo ip link set &lt;NIC_OUT&gt; master br0
+
+# Assign the IDS its own management IP on the bridge
+sudo ip addr add &lt;IDS_IP&gt;/24 dev br0
+
+# Bring up the NICs (no IP on the slaves themselves)
+sudo ip link set &lt;NIC_IN&gt; up
+sudo ip link set &lt;NIC_OUT&gt; up
+
+# Redirect 443 into the interceptor (as usual)
+sudo python -m ssl_inspect.iptables install
+
+# Persist: bridge setup is normally done in /etc/network/interfaces
+# or /etc/sysconfig/network-scripts/ifcfg-br0 depending on distro.</pre>
+            <p class="small" style="margin: 8px 0 0;">
+                The client sees an ordinary switched network and needs no changes.
+                Note that bridging disables the ability to bypass the IDS at the
+                network level — if the IDS goes down, so does the link.
+            </p>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Option 3 — Upstream router DNAT</h3>
+            <p class="small" style="margin: 0 0 8px;">
+                If you control the router between the clients and the internet,
+                redirect TCP/443 on the <strong>router</strong> toward this host.
+                The IDS stays off the traffic path for everything else. Best for
+                mid-sized networks where a full bridge or gateway setup is not
+                practical.
+            </p>
+            <pre># ---- On the ROUTER, not on the IDS ----
+# Redirect any TCP/443 leaving the client subnet to the IDS.
+# Replace:
+#   &lt;CLIENT_NET&gt;  — the client subnet (e.g. 10.0.20.0/24)
+#   &lt;IDS_IP&gt;      — this host's IP
+#   &lt;PORT&gt;        — SSL_INTERCEPT_PORT from .env (default 8443)
+
+sudo iptables -t nat -A PREROUTING \
+  -s &lt;CLIENT_NET&gt; -p tcp --dport 443 \
+  -j DNAT --to-destination &lt;IDS_IP&gt;:&lt;PORT&gt;
+
+# Enable forwarding on the router if not already
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# ---- On the IDS ----
+# The redirect rule from ssl_inspect.iptables is NOT needed here, because
+# the router has already DNAT'd 443 to the interceptor port. sslsplit
+# simply listens on &lt;PORT&gt; and accepts the connections the router forwards.
+# Do make sure the interceptor is running (SSL_DECRYPTION_ENABLED=true).</pre>
+            <p class="small" style="margin: 8px 0 0;">
+                <strong>Watch out for double-redirect.</strong> If the IDS also runs
+                <code>python -m ssl_inspect.iptables install</code>, packets arrive on
+                the interceptor port, get redirected again to the same port, and the
+                second REDIRECT rule does nothing. Remove the local redirect rule
+                (<code>python -m ssl_inspect.iptables remove</code>) when using DNAT
+                from an upstream router.
+            </p>
+            <p class="small" style="margin: 8px 0 0;">
+                <strong>Other routers.</strong> The commands above are for
+                Linux-based routers. pfSense and OPNsense use <code>pf</code>
+                instead of <code>iptables</code>; MikroTik RouterOS uses
+                <code>/ip firewall nat</code>. The underlying idea is the same in
+                all three — DNAT any TCP/443 leaving the client subnet to
+                &lt;IDS_IP&gt;:&lt;PORT&gt;.
+            </p>
+        </div>
+
+        <div class="ssl-guide-os">
+            <h3>Verifying that traffic is actually flowing through the IDS</h3>
+            <p class="small" style="margin: 0 0 8px;">
+                After picking a topology, confirm the IDS is seeing intercepted
+                packets <em>before</em> debugging certificates or the interceptor.
+            </p>
+            <pre># ---- On the IDS host ----
+# Counter should increase as the client browses HTTPS sites.
+sudo iptables -t nat -L PREROUTING -n -v
+#   Look for non-zero packets/bytes on the REDIRECT rule
+
+# sslsplit should be listening on the intercept port.
+sudo ss -tlnp | grep &lt;PORT&gt;
+
+# The connect log is written as sslsplit terminates connections.
+sudo tail -f storage/sslsplit-connect.log
+#   Each terminated flow emits one line while the client browses.
+
+# ---- On the CLIENT ----
+# Confirm the route points at the IDS (gateway topology only).
+# Linux:
+ip route show default
+#   Must print `via &lt;IDS_IP&gt;` for Option 1 to work.
+# Windows:
+#   route print -4
+# macOS:
+#   netstat -rn | grep default
+
+# Confirm the CA is trusted and openssl accepts the forged certificate.
+openssl s_client -connect example.com:443 -servername example.com &lt; /dev/null 2&gt;/dev/null \
+  | openssl x509 -noout -issuer
+#   Should print: issuer=C = ..., O = Enterprise AI IDS, OU = Network Security, CN = Enterprise AI IDS Root CA</pre>
+            <p class="small" style="margin: 8px 0 0;">
+                If the iptables counters stay at zero, the client's traffic is not
+                reaching this host. That is a routing problem — do not debug the
+                interceptor or the CA first. If counters increase but the connect
+                log stays empty, the packets are being redirected but sslsplit is
+                not running or is listening on a different port.
+            </p>
+        </div>
+
+        <div class="ssl-note" style="margin-top: 20px;">
+            <strong>Why this step is easy to miss.</strong>
+            The CA trust step and the topology step are independent.
+            Installing the CA without a topology change leaves the client
+            connecting directly to the real server with the browser showing
+            no warnings (because the real server's certificate is already
+            trusted by the system store). Everything looks fine and nothing
+            is being intercepted. This is the single most common reason
+            people believe TLS interception "does not work."
+        </div>
+    </section>
+
+    <section class="card dash-logs-panel" style="margin-bottom: 24px;">
+        <div class="dash-section-head">
             <h2>Client trust installation</h2>
             <p class="dash-section-desc">
                 Use the <strong>Download CA (PEM)</strong> button in the Root certificate

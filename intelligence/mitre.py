@@ -37,47 +37,105 @@ TACTICS = [
 
 
 # reason token (exact or prefix) -> technique
+#
+# Keys are lowercase. The pipeline emits `http_{category.lower()}` from
+# ids/ai_analysis.py, so keeping keys lowercase here makes classify() work
+# for both lowercase and mixed-case input via its `.lower()` fallback.
 REASON_TO_TECHNIQUE: dict[str, dict[str, str]] = {
-    # Application-layer attacks detected by the payload analyzer
-    "http_SQLi":              {"technique": "T1190",     "tactic": "Initial Access",        "name": "Exploit Public-Facing Application"},
-    "payload_SQLi":           {"technique": "T1190",     "tactic": "Initial Access",        "name": "Exploit Public-Facing Application"},
-    "http_XSS":               {"technique": "T1059.007", "tactic": "Execution",             "name": "JavaScript/JScript"},
-    "payload_XSS":            {"technique": "T1059.007", "tactic": "Execution",             "name": "JavaScript/JScript"},
-    "http_Command_Injection": {"technique": "T1059",     "tactic": "Execution",             "name": "Command and Scripting Interpreter"},
-    "payload_Command_Injection": {"technique": "T1059",  "tactic": "Execution",             "name": "Command and Scripting Interpreter"},
-    "http_Path_Traversal":    {"technique": "T1083",     "tactic": "Discovery",             "name": "File and Directory Discovery"},
-    "http_File_Inclusion":    {"technique": "T1190",     "tactic": "Initial Access",        "name": "Exploit Public-Facing Application"},
-    "http_SSRF":              {"technique": "T1190",     "tactic": "Initial Access",        "name": "Exploit Public-Facing Application"},
-    "http_Credential_Leak":   {"technique": "T1552",     "tactic": "Credential Access",     "name": "Unsecured Credentials"},
-    "http_Malware_Indicators":{"technique": "T1105",     "tactic": "Command and Control",   "name": "Ingress Tool Transfer"},
-    "http_Binary_Exploit":    {"technique": "T1203",     "tactic": "Execution",             "name": "Exploitation for Client Execution"},
+    # ------------------------------------------------------------------
+    # Injection / exploitation (payload analyzer, Initial Access family)
+    # ------------------------------------------------------------------
+    "http_sqli":               {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "payload_sqli":            {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_nosqli":             {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_ldap_injection":     {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_xpath_injection":    {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_ssti":               {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_jndi_injection":     {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_file_inclusion":     {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_ssrf":               {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_deserialization":    {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_prototype_pollution":{"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_xxe":                {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_open_redirect":      {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_crlf_injection":     {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_header_injection":   {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_jwt_abuse":          {"technique": "T1190",     "tactic": "Initial Access",     "name": "Exploit Public-Facing Application"},
+    "http_csv_injection":      {"technique": "T1203",     "tactic": "Execution",          "name": "Exploitation for Client Execution"},
 
+    # ------------------------------------------------------------------
+    # Execution (RCE / code exec)
+    # ------------------------------------------------------------------
+    "http_command_injection":  {"technique": "T1059",     "tactic": "Execution",          "name": "Command and Scripting Interpreter"},
+    "payload_command_injection":{"technique": "T1059",    "tactic": "Execution",          "name": "Command and Scripting Interpreter"},
+    "http_code_injection":     {"technique": "T1059",     "tactic": "Execution",          "name": "Command and Scripting Interpreter"},
+    "http_xss":                {"technique": "T1059.007", "tactic": "Execution",          "name": "JavaScript/JScript"},
+    "payload_xss":             {"technique": "T1059.007", "tactic": "Execution",          "name": "JavaScript/JScript"},
+    "http_binary_exploit":     {"technique": "T1203",     "tactic": "Execution",          "name": "Exploitation for Client Execution"},
+
+    # ------------------------------------------------------------------
+    # Discovery / reconnaissance
+    # ------------------------------------------------------------------
+    "http_path_traversal":     {"technique": "T1083",     "tactic": "Discovery",          "name": "File and Directory Discovery"},
+    "http_source_disclosure":  {"technique": "T1083",     "tactic": "Discovery",          "name": "File and Directory Discovery"},
+    "http_enumeration":        {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "http_scanning":           {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "http_graphql_injection":  {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "http_phishing_indicators":{"technique": "T1566",     "tactic": "Initial Access",     "name": "Phishing"},
+
+    # ------------------------------------------------------------------
+    # Credential Access
+    # ------------------------------------------------------------------
+    "http_credential_leak":    {"technique": "T1552",     "tactic": "Credential Access",  "name": "Unsecured Credentials"},
+    "http_cloud_metadata":     {"technique": "T1552.005", "tactic": "Credential Access",  "name": "Cloud Instance Metadata API"},
+
+    # ------------------------------------------------------------------
+    # Command and Control / delivery
+    # ------------------------------------------------------------------
+    "http_malware_indicators": {"technique": "T1105",     "tactic": "Command and Control", "name": "Ingress Tool Transfer"},
+
+    # ------------------------------------------------------------------
+    # Impact
+    # ------------------------------------------------------------------
+    "http_cryptomining":       {"technique": "T1496",     "tactic": "Impact",             "name": "Resource Hijacking"},
+    "http_xml_bomb":           {"technique": "T1499",     "tactic": "Impact",             "name": "Endpoint Denial of Service"},
+
+    # ------------------------------------------------------------------
     # Behavioral detectors
-    "port_scan":              {"technique": "T1046",     "tactic": "Discovery",             "name": "Network Service Discovery"},
-    "flood":                  {"technique": "T1498",     "tactic": "Impact",                "name": "Network Denial of Service"},
+    # ------------------------------------------------------------------
+    "port_scan":               {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "flood":                   {"technique": "T1498",     "tactic": "Impact",             "name": "Network Denial of Service"},
 
+    # ------------------------------------------------------------------
     # DNS heuristics
-    "dns_tunnel_suspected":   {"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
-    "dns_high_entropy_qname": {"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
-    "dns_long_qname":         {"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
-    "dns_many_unique_queries":{"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
-    "dns_subdomain_churn":    {"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
-    "dns_txt_burst":          {"technique": "T1071.004", "tactic": "Command and Control",   "name": "DNS"},
+    # ------------------------------------------------------------------
+    "dns_tunnel_suspected":    {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
+    "dns_high_entropy_qname":  {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
+    "dns_long_qname":          {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
+    "dns_many_unique_queries": {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
+    "dns_subdomain_churn":     {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
+    "dns_txt_burst":           {"technique": "T1071.004", "tactic": "Command and Control", "name": "DNS"},
 
+    # ------------------------------------------------------------------
     # Reputation signals
-    "reputation_ip_malicious":   {"technique": "T1071",  "tactic": "Command and Control",   "name": "Application Layer Protocol"},
-    "reputation_ip_suspicious":  {"technique": "T1071",  "tactic": "Command and Control",   "name": "Application Layer Protocol"},
-    "reputation_url_malicious":  {"technique": "T1071",  "tactic": "Command and Control",   "name": "Application Layer Protocol"},
-    "reputation_url_suspicious": {"technique": "T1071",  "tactic": "Command and Control",   "name": "Application Layer Protocol"},
+    # ------------------------------------------------------------------
+    "reputation_ip_malicious":   {"technique": "T1071",   "tactic": "Command and Control", "name": "Application Layer Protocol"},
+    "reputation_ip_suspicious":  {"technique": "T1071",   "tactic": "Command and Control", "name": "Application Layer Protocol"},
+    "reputation_url_malicious":  {"technique": "T1071",   "tactic": "Command and Control", "name": "Application Layer Protocol"},
+    "reputation_url_suspicious": {"technique": "T1071",   "tactic": "Command and Control", "name": "Application Layer Protocol"},
 
+    # ------------------------------------------------------------------
     # Zeek-derived signals
-    "zeek_port_scan":         {"technique": "T1046",     "tactic": "Discovery",             "name": "Network Service Discovery"},
-    "zeek_syn_scan_pattern":  {"technique": "T1046",     "tactic": "Discovery",             "name": "Network Service Discovery"},
-    "zeek_flag_dangerous":    {"technique": "T1046",     "tactic": "Discovery",             "name": "Network Service Discovery"},
-    "zeek_flag_suspicious":   {"technique": "T1046",     "tactic": "Discovery",             "name": "Network Service Discovery"},
+    # ------------------------------------------------------------------
+    "zeek_port_scan":          {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "zeek_syn_scan_pattern":   {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "zeek_flag_dangerous":     {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
+    "zeek_flag_suspicious":    {"technique": "T1046",     "tactic": "Discovery",          "name": "Network Service Discovery"},
 
-    # SSL-decrypted traffic path has no ML; still worth mapping
-    "ml_skipped_no_features": None,  # explicitly unmapped
+    # ------------------------------------------------------------------
+    # Explicitly unmapped
+    # ------------------------------------------------------------------
+    "ml_skipped_no_features": None,
 }
 
 
